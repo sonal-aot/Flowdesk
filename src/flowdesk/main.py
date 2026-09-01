@@ -391,7 +391,19 @@ def publish_flow(
     caller: Caller = CallerDep,
     session: Session = SessionDep,
 ) -> dict[str, Any]:
-    """Publish a flow. The library refuses this unless the caller is an admin."""
+    """Publish a flow. Designers only.
+
+    The library enforces this too -- `process_definition.import` is admin-only --
+    but its check runs during the import, after the diagram has been parsed. A
+    caller who may not publish should not learn whether their file was valid, so
+    the permission is settled first.
+    """
+    if USERS[caller.username][2] != "admin":
+        from m8flow_bpmn_core.errors import AuthorizationError
+
+        raise AuthorizationError(
+            f"User {caller.user_id} may not publish flows in {caller.tenant_id}"
+        )
     definition, _flow = publish(
         session,
         tenant_id=caller.tenant_id,

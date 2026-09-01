@@ -247,6 +247,14 @@ def test_publishing_rejects_something_that_is_not_a_flow(client):
     assert response.status_code == 422, response.text
 
 
+def test_permission_is_settled_before_the_file_is_looked_at(client):
+    """An analyst gets 403 for rubbish input too, not a hint that it was parsed."""
+    response = client.post(
+        "/flows", json={"bpmn": "<html>not bpmn</html>"}, headers=h(ANALYST)
+    )
+    assert response.status_code == 403, response.text
+
+
 def test_inspect_reports_a_diagram_without_publishing_it(client):
     bpmn = """<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
