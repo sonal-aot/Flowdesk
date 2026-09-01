@@ -21,7 +21,11 @@ from typing import Any
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from m8flow_bpmn_core import api
-from m8flow_bpmn_core.errors import NotFoundError, ValidationError
+from m8flow_bpmn_core.errors import (
+    AuthorizationError,
+    NotFoundError,
+    ValidationError,
+)
 from m8flow_bpmn_core.models.bpmn_process_definition import (
     BpmnProcessDefinitionModel,
 )
@@ -37,7 +41,20 @@ from flowdesk.db import get_session, init_schema, session_factory
 from flowdesk.errors import register_error_handlers
 from flowdesk.identity import Caller, current_caller
 from flowdesk.scheduler import scheduler_running
-from flowdesk.seed import TENANTS, USERS, seed, service_url, usernames
+from flowdesk.auth import issue_token, verify_password
+from flowdesk.seed import (
+    ACCOUNTS,
+    CONFIGURE,
+    OPERATE,
+    PUBLISH,
+    TENANTS,
+    VIEW_ALL,
+    account,
+    can,
+    seed,
+    service_url,
+    usernames,
+)
 
 SEEDS_DIR = Path(__file__).parent / "seeds"
 
@@ -55,6 +72,12 @@ class PublishIn(BaseModel):
     forms: dict[str, Any] = Field(default_factory=dict)
     #: lane name -> usernames who pick up that lane's work
     lane_owners: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class LoginIn(BaseModel):
+    company_id: str = Field(min_length=1)
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
 
 
 class InspectIn(BaseModel):
@@ -75,6 +98,19 @@ class ScheduleRetryIn(BaseModel):
 
 def now() -> int:
     return int(time.time())
+
+
+def require(caller: Caller, capability: str) -> None:
+    """App-level permission.
+
+    The library's V1 RBAC covers starting flows and working on tasks. It has no
+    vocabulary for "may publish but may not operate", which is the difference
+    between this product's admin and editor, so those checks live here.
+    """
+    if not can(caller.username, capability):
+        raise AuthorizationError(
+            f"{caller.username} may not {capability} in {caller.tenant_id}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -117,7 +153,7 @@ def publish(
             person
             for owners in lane_owners.values()
             for person in owners
-            if person not in USERS
+            if person not in ACCOUNTS
         }
     )
     if unknown:
@@ -187,13 +223,13 @@ async def lifespan(_app: FastAPI):
 def install_seed_flows(session: Session) -> None:
     """Publish the bundled example flows so the console is not empty on day one."""
     for tenant_id in TENANTS:
-        designer = session.scalar(
+        publisher = session.scalar(
             select(UserModel).where(
                 UserModel.service == service_url(tenant_id),
-                UserModel.service_id == "designer",
+                UserModel.service_id == "admin",
             )
         )
-        if designer is None:  # pragma: no cover - seeding guarantees this
+        if publisher is None:  # pragma: no cover - seeding guarantees this
             continue
         for bpmn_path in sorted(SEEDS_DIR.glob("*.bpmn")):
             dmn_path = bpmn_path.with_suffix(".dmn")
@@ -208,7 +244,7 @@ def install_seed_flows(session: Session) -> None:
                 ),
             )
             publish(
-                session, tenant_id=tenant_id, actor_user_id=designer.id, body=body
+                session, tenant_id=tenant_id, actor_user_id=publisher.id, body=body
             )
 
 
@@ -301,44 +337,74 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/accounts")
-def accounts() -> list[dict[str, Any]]:
+@app.get("/companies")
+def companies() -> list[dict[str, str]]:
+    """For the sign-in screen's company picker."""
+    return [
+        {"company_id": tenant_id, "company": name}
+        for tenant_id, name in TENANTS.items()
+    ]
+
+
+@app.get("/demo-accounts")
+def demo_accounts() -> list[dict[str, str]]:
+    """The seeded accounts, so the sign-in screen can offer them.
+
+    A real deployment would not have this route; it exists because there is no
+    identity provider here and the passwords are demo values.
+    """
     return [
         {
-            "company_id": tenant_id,
-            "company": company,
-            "username": username,
-            "name": name,
-            "title": title,
-            "role": role,
-            "initials": "".join(part[0] for part in name.split()[:2]).upper(),
+            "username": entry.username,
+            "name": entry.name,
+            "title": entry.title,
+            "library_role": entry.library_role,
+            "capabilities": ", ".join(sorted(entry.capabilities)) or "—",
         }
-        for tenant_id, company in TENANTS.items()
-        for username, (name, title, role) in USERS.items()
+        for entry in ACCOUNTS.values()
     ]
+
+
+@app.post("/auth/login")
+def login(body: LoginIn, session: Session = SessionDep) -> dict[str, Any]:
+    if body.company_id not in TENANTS:
+        raise AuthorizationError("Unknown company, username or password")
+    stored = store.credential(session, body.company_id, body.username)
+    if stored is None or not verify_password(body.password, stored.password_hash):
+        # One message for every failure, so it cannot be used to enumerate users.
+        raise AuthorizationError("Unknown company, username or password")
+
+    token, expires_at = issue_token(
+        tenant_id=body.company_id, username=body.username
+    )
+    return {"token": token, "expires_at": expires_at}
 
 
 @app.get("/me")
 def me(caller: Caller = CallerDep, session: Session = SessionDep) -> dict[str, Any]:
     directory = people(session, caller.tenant_id)
     person = directory[caller.user_id]
-    name, title, role = USERS[caller.username]
+    entry = account(caller.username)
     open_tasks = api.execute_query(
         session,
         api.GetPendingTasksQuery(tenant_id=caller.tenant_id, user_id=caller.user_id),
     )
     return {
-        "name": person.display_name or name,
+        "name": person.display_name or entry.name,
         "username": caller.username,
-        "title": title,
-        "role": role,
+        "title": entry.title,
+        "role": caller.username,
+        "library_role": entry.library_role,
         "company": TENANTS[caller.tenant_id],
         "company_id": caller.tenant_id,
-        "can_publish": role == "admin",
-        "can_operate": role == "admin",
+        "can_publish": can(caller.username, PUBLISH),
+        "can_operate": can(caller.username, OPERATE),
+        "can_configure": can(caller.username, CONFIGURE),
+        "can_view_all": can(caller.username, VIEW_ALL),
         "open_tasks": len(open_tasks),
         "people": [
-            {"username": key, "name": value[0]} for key, value in USERS.items()
+            {"username": entry.username, "name": entry.name}
+            for entry in ACCOUNTS.values()
         ],
     }
 
@@ -355,10 +421,9 @@ def operations(caller: Caller = CallerDep) -> list[dict[str, str]]:
 
 
 @app.post("/inspect")
-def inspect_bpmn(
-    body: InspectIn, caller: Caller = CallerDep
-) -> dict[str, Any]:
+def inspect_bpmn(body: InspectIn, caller: Caller = CallerDep) -> dict[str, Any]:
     """Read a diagram without publishing it, so the designer can check it first."""
+    require(caller, PUBLISH)
     flow = bpmn_inspect.inspect(body.bpmn)
     known = {operation["operation_id"] for operation in available_operations()}
     return {
@@ -381,7 +446,7 @@ def inspect_bpmn(
         "script_tasks": flow.script_tasks,
         "form_files": list(flow.form_files),
         "problems": list(flow.errors),
-        "people": list(USERS),
+        "people": usernames(),
     }
 
 
@@ -398,12 +463,7 @@ def publish_flow(
     caller who may not publish should not learn whether their file was valid, so
     the permission is settled first.
     """
-    if USERS[caller.username][2] != "admin":
-        from m8flow_bpmn_core.errors import AuthorizationError
-
-        raise AuthorizationError(
-            f"User {caller.user_id} may not publish flows in {caller.tenant_id}"
-        )
+    require(caller, PUBLISH)
     definition, _flow = publish(
         session,
         tenant_id=caller.tenant_id,
@@ -528,7 +588,7 @@ def list_instances(
         session,
         api.ListProcessInstancesQuery(tenant_id=caller.tenant_id, status=status),
     )
-    if scope == "mine":
+    if scope == "mine" or not can(caller.username, VIEW_ALL):
         instances = [
             row for row in instances if row.process_initiator_id == caller.user_id
         ]
@@ -640,7 +700,8 @@ def lifecycle(
     caller: Caller = CallerDep,
     session: Session = SessionDep,
 ) -> dict[str, Any]:
-    """hold / release / cancel / retry. All admin-only in the library's V1 RBAC."""
+    """hold / release / cancel / retry. Needs the operate capability."""
+    require(caller, OPERATE)
     command_type = LIFECYCLE.get(action)
     if command_type is None:
         raise NotFoundError(f"There is no '{action}' action")
@@ -664,6 +725,7 @@ def schedule_retry(
     session: Session = SessionDep,
 ) -> dict[str, Any]:
     """Ask the scheduler to retry an errored instance later."""
+    require(caller, OPERATE)
     instance = api.execute_command(
         session,
         api.ScheduleProcessInstanceRetryCommand(
@@ -866,6 +928,7 @@ def activity(
     caller: Caller = CallerDep, session: Session = SessionDep
 ) -> list[dict[str, Any]]:
     """Everything the connectors did, newest first."""
+    require(caller, VIEW_ALL)
     return [
         {
             "id": call.id,

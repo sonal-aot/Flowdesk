@@ -1,14 +1,13 @@
-"""Request identity and the app-owned read guard.
+"""Request identity, from a bearer token.
 
-Every request carries ``X-Tenant-Id`` and ``X-User`` headers, standing in for
-the claims a real deployment would read off a Keycloak JWT. Faking the claims
-keeps the RBAC surface visible instead of buried in an OIDC flow.
+The token is the session (see auth.py). Resolving it gives a tenant and a
+username; this module turns those into the tenant id and integer user id every
+library command needs, and verifies the two actually belong together.
 
-The guard matters because the library authorizes the WRITE side only:
-``execute_query`` never checks tenant membership and most queries do not even
+That last check matters because the library authorizes the WRITE side only:
+`execute_query` never checks tenant membership and most queries do not even
 accept a user id, so whatever tenant id the host passes is trusted. This module
 is the only thing standing between a caller and another tenant's data on reads.
-See FINDINGS.md #2.
 """
 
 from __future__ import annotations
@@ -16,13 +15,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fastapi import Depends, Header
-from m8flow_bpmn_core.errors import AuthorizationError, NotFoundError
+from m8flow_bpmn_core.errors import AuthorizationError
 from m8flow_bpmn_core.models.user import UserModel
 from m8flow_bpmn_core.services.tenant_users import ensure_user_belongs_to_tenant
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowdesk.auth import resolve_token
 from flowdesk.db import get_session
+from flowdesk.seed import service_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,28 +35,22 @@ class Caller:
 
 def current_caller(
     session: Session = Depends(get_session),
-    x_tenant_id: str = Header(..., alias="X-Tenant-Id"),
-    x_user: str = Header(..., alias="X-User"),
+    authorization: str | None = Header(default=None),
 ) -> Caller:
-    # Usernames are deliberately duplicated across tenants, so pick the namesake
-    # whose service realm resolves to the requested tenant.
-    namesakes = session.scalars(
-        select(UserModel).where(UserModel.username == x_user).order_by(UserModel.id)
-    ).all()
-    if not namesakes:
-        raise NotFoundError(f"Unknown user {x_user!r}")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise AuthorizationError("Sign in to continue")
+    tenant_id, username = resolve_token(authorization.split(" ", 1)[1].strip())
 
-    for candidate in namesakes:
-        try:
-            ensure_user_belongs_to_tenant(
-                session, tenant_id=x_tenant_id, user_id=candidate.id
-            )
-        except AuthorizationError:
-            continue
-        return Caller(
-            tenant_id=x_tenant_id, user_id=candidate.id, username=candidate.username
+    # Usernames repeat across companies, so resolve within the token's tenant.
+    user = session.scalar(
+        select(UserModel).where(
+            UserModel.service == service_url(tenant_id),
+            UserModel.service_id == username,
         )
-
-    raise AuthorizationError(
-        f"User {x_user!r} does not belong to tenant {x_tenant_id!r}"
     )
+    if user is None:
+        raise AuthorizationError("That account no longer exists")
+
+    # The library's own membership rule, applied to reads as well as writes.
+    ensure_user_belongs_to_tenant(session, tenant_id=tenant_id, user_id=user.id)
+    return Caller(tenant_id=tenant_id, user_id=user.id, username=username)

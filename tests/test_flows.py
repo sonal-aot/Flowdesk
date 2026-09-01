@@ -4,36 +4,48 @@ from __future__ import annotations
 
 import time
 
-from conftest import headers
+from conftest import auth_headers
 
-DESIGNER = ("northwind", "designer")
-ANALYST = ("northwind", "analyst")
+ADMIN = ("northwind", "admin")
+EDITOR = ("northwind", "editor")
 REVIEWER = ("northwind", "reviewer")
+SUBMITTER = ("northwind", "submitter")
+
+# Bound per test by the `client` fixture; `h` needs the client to sign in.
+_client = None
 
 
 def h(who):
-    return headers(*who)
+    return auth_headers(_client, *who)
 
 
-def flows(client, who=ANALYST):
+@__import__("pytest").fixture(autouse=True)
+def _bind_client(client):
+    global _client
+    _client = client
+    yield
+    _client = None
+
+
+def flows(client, who=SUBMITTER):
     response = client.get("/flows", headers=h(who))
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def start(client, process_id, who=ANALYST):
+def start(client, process_id, who=SUBMITTER):
     response = client.post(f"/flows/{process_id}/start", json={}, headers=h(who))
     assert response.status_code == 201, response.text
     return response.json()["id"]
 
 
-def open_tasks(client, who=ANALYST, mine=True):
+def open_tasks(client, who=SUBMITTER, mine=True):
     response = client.get(f"/tasks?mine={str(mine).lower()}", headers=h(who))
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def complete(client, task_id, payload, who=ANALYST):
+def complete(client, task_id, payload, who=SUBMITTER):
     response = client.post(
         f"/tasks/{task_id}/complete", json={"payload": payload}, headers=h(who)
     )
@@ -41,7 +53,7 @@ def complete(client, task_id, payload, who=ANALYST):
     return response.json()
 
 
-def instance(client, instance_id, who=ANALYST):
+def instance(client, instance_id, who=SUBMITTER):
     response = client.get(f"/instances/{instance_id}", headers=h(who))
     assert response.status_code == 200, response.text
     return response.json()
@@ -55,7 +67,7 @@ def test_the_bundled_flows_are_published_to_every_company(client):
         "Process_incident_response",
     ]
     # Published once per company, not shared between them.
-    assert len(flows(client, ("initech", "analyst"))) == 3
+    assert len(flows(client, ("initech", "submitter"))) == 3
 
 
 def test_a_flow_advertises_what_is_inside_it(client):
@@ -82,7 +94,7 @@ def test_expense_over_the_threshold_needs_an_approver(client):
     assert submit["name"] == "Submit Expense Claim"
 
     # The form comes from the diagram, not from anything hardcoded here.
-    detail = client.get(f"/tasks/{submit['id']}", headers=h(ANALYST)).json()
+    detail = client.get(f"/tasks/{submit['id']}", headers=h(SUBMITTER)).json()
     assert detail["form"]["title"] == "Submit an expense claim"
     assert detail["form"]["required"] == ["amount", "purpose"]
     assert "cost_centre" in detail["form"]["properties"]
@@ -153,7 +165,7 @@ def test_a_parallel_flow_opens_two_tasks_at_once(client):
     assert detail["data"]["channel"] == "status page"
 
 
-def test_a_designer_can_publish_a_new_flow_and_anyone_can_run_it(client):
+def test_an_editor_can_publish_a_new_flow_and_anyone_can_run_it(client):
     bpmn = """<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
   xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
@@ -189,20 +201,20 @@ def test_a_designer_can_publish_a_new_flow_and_anyone_can_run_it(client):
         }
     }
 
-    # An analyst may not publish -- the library refuses process_definition.import.
+    # A submitter may not publish.
     refused = client.post(
-        "/flows", json={"bpmn": bpmn, "forms": forms}, headers=h(ANALYST)
+        "/flows", json={"bpmn": bpmn, "forms": forms}, headers=h(SUBMITTER)
     )
     assert refused.status_code == 403, refused.text
 
     created = client.post(
         "/flows",
-        json={"bpmn": bpmn, "forms": forms, "lane_owners": {"Staff": ["analyst"]}},
-        headers=h(DESIGNER),
+        json={"bpmn": bpmn, "forms": forms, "lane_owners": {"Staff": ["submitter"]}},
+        headers=h(ADMIN),
     )
     assert created.status_code == 201, created.text
     assert created.json()["process_id"] == "Process_book_desk"
-    assert created.json()["lane_owners"] == {"Staff": ["analyst"]}
+    assert created.json()["lane_owners"] == {"Staff": ["submitter"]}
 
     # ...and now anybody who owns the lane can run it.
     instance_id = start(client, "Process_book_desk")
@@ -235,22 +247,22 @@ def test_publishing_rejects_a_diagram_whose_forms_are_missing(client):
     <bpmn:sequenceFlow id="g" sourceRef="t" targetRef="e" />
   </bpmn:process>
 </bpmn:definitions>"""
-    response = client.post("/flows", json={"bpmn": bpmn}, headers=h(DESIGNER))
+    response = client.post("/flows", json={"bpmn": bpmn}, headers=h(ADMIN))
     assert response.status_code == 422, response.text
     assert "nowhere.json" in response.json()["message"]
 
 
 def test_publishing_rejects_something_that_is_not_a_flow(client):
     response = client.post(
-        "/flows", json={"bpmn": "<html>not bpmn</html>"}, headers=h(DESIGNER)
+        "/flows", json={"bpmn": "<html>not bpmn</html>"}, headers=h(ADMIN)
     )
     assert response.status_code == 422, response.text
 
 
 def test_permission_is_settled_before_the_file_is_looked_at(client):
-    """An analyst gets 403 for rubbish input too, not a hint that it was parsed."""
+    """A submitter gets 403 for rubbish input too, not a hint that it was parsed."""
     response = client.post(
-        "/flows", json={"bpmn": "<html>not bpmn</html>"}, headers=h(ANALYST)
+        "/flows", json={"bpmn": "<html>not bpmn</html>"}, headers=h(SUBMITTER)
     )
     assert response.status_code == 403, response.text
 
@@ -272,15 +284,16 @@ def test_inspect_reports_a_diagram_without_publishing_it(client):
     <bpmn:sequenceFlow id="g" sourceRef="svc" targetRef="e" />
   </bpmn:process>
 </bpmn:definitions>"""
-    report = client.post("/inspect", json={"bpmn": bpmn}, headers=h(DESIGNER)).json()
+    report = client.post("/inspect", json={"bpmn": bpmn}, headers=h(ADMIN)).json()
     assert report["process_id"] == "Process_preview"
     # The console warns about an operation it cannot serve.
     assert report["unknown_operations"] == ["carrier_pigeon/Send"]
-    assert client.get("/flows/Process_preview", headers=h(DESIGNER)).status_code == 404
+    assert client.get("/flows/Process_preview", headers=h(ADMIN)).status_code == 404
 
 
 def test_a_reviewer_cannot_start_a_flow(client):
-    """V1 roles are not a hierarchy: `manager` has no process.start."""
+    """V1 roles are not a hierarchy: reviewer maps to `manager`, which has no
+    process.start, so a reviewer cannot start a flow."""
     response = client.post(
         "/flows/Process_expense_approval/start", json={}, headers=h(REVIEWER)
     )
@@ -291,32 +304,32 @@ def test_operators_can_hold_release_and_cancel(client):
     instance_id = start(client, "Process_incident_response")
 
     assert (
-        client.post(f"/instances/{instance_id}/hold", headers=h(DESIGNER)).json()[
+        client.post(f"/instances/{instance_id}/hold", headers=h(ADMIN)).json()[
             "status"
         ]
         == "suspended"
     )
     assert (
-        client.post(f"/instances/{instance_id}/release", headers=h(DESIGNER)).json()[
+        client.post(f"/instances/{instance_id}/release", headers=h(ADMIN)).json()[
             "status"
         ]
         == "running"
     )
     assert (
-        client.post(f"/instances/{instance_id}/cancel", headers=h(DESIGNER)).json()[
+        client.post(f"/instances/{instance_id}/cancel", headers=h(ADMIN)).json()[
             "status"
         ]
         == "terminated"
     )
-    # An analyst may not.
+    # A submitter may not.
     other = start(client, "Process_incident_response")
-    assert client.post(f"/instances/{other}/hold", headers=h(ANALYST)).status_code == 403
+    assert client.post(f"/instances/{other}/hold", headers=h(SUBMITTER)).status_code == 403
 
 
 def test_a_boundary_timer_moves_the_work_on(client):
     """Published with a two-second window so the poller fires inside the test."""
     original = client.get(
-        "/flows/Process_access_request/diagram", headers=h(DESIGNER)
+        "/flows/Process_access_request/diagram", headers=h(ADMIN)
     ).json()["bpmn"]
     hurried = original.replace("'PT10M'", "'PT2S'")
     forms = {
@@ -335,12 +348,12 @@ def test_a_boundary_timer_moves_the_work_on(client):
             "bpmn": hurried,
             "forms": forms,
             "lane_owners": {
-                "Requester": ["analyst"],
+                "Requester": ["submitter"],
                 "System Owner": ["reviewer"],
-                "Security": ["auditor"],
+                "Security": ["reviewer"],
             },
         },
-        headers=h(DESIGNER),
+        headers=h(ADMIN),
     )
     assert published.status_code == 201, published.text
 
@@ -355,7 +368,7 @@ def test_a_boundary_timer_moves_the_work_on(client):
     def names_open():
         return [
             t["name"]
-            for t in open_tasks(client, DESIGNER, mine=False)
+            for t in open_tasks(client, ADMIN, mine=False)
             if t["instance_id"] == instance_id
         ]
 
@@ -373,16 +386,16 @@ def test_a_boundary_timer_moves_the_work_on(client):
 
 def test_companies_are_isolated(client):
     northwind_id = start(client, "Process_expense_approval")
-    initech_id = start(client, "Process_expense_approval", ("initech", "analyst"))
+    initech_id = start(client, "Process_expense_approval", ("initech", "submitter"))
 
-    northwind = client.get("/instances", headers=h(ANALYST)).json()
-    initech = client.get("/instances", headers=headers("initech", "analyst")).json()
+    northwind = client.get("/instances", headers=h(SUBMITTER)).json()
+    initech = client.get("/instances", headers=auth_headers(client, "initech", "submitter")).json()
     assert [row["id"] for row in northwind] == [northwind_id]
     assert [row["id"] for row in initech] == [initech_id]
 
     # A task id from the other company is not readable.
     assert (
-        client.get(f"/instances/{initech_id}", headers=h(ANALYST)).status_code == 404
+        client.get(f"/instances/{initech_id}", headers=h(SUBMITTER)).status_code == 404
     )
 
 
@@ -391,14 +404,14 @@ def test_the_activity_log_lists_connector_calls(client):
     submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
     complete(client, submit["id"], {"amount": 10, "purpose": "Coffee"})
 
-    log = client.get("/activity", headers=h(DESIGNER)).json()
+    log = client.get("/activity", headers=h(ADMIN)).json()
     assert log[0]["operation_id"] == "log/Write"
     assert log[0]["outcome"] == "ok"
     assert log[0]["instance_id"] == instance_id
 
 
 def test_the_console_lists_the_operations_a_diagram_may_call(client):
-    listed = client.get("/operations", headers=h(DESIGNER)).json()
+    listed = client.get("/operations", headers=h(ADMIN)).json()
     assert {row["operation_id"] for row in listed} == {
         "log/Write",
         "log/Trace",
@@ -415,7 +428,7 @@ def test_republishing_does_not_revoke_a_lane(client):
     leaver cannot be removed by republishing. See FINDINGS.md.
     """
     bpmn = client.get(
-        "/flows/Process_access_request/diagram", headers=h(DESIGNER)
+        "/flows/Process_access_request/diagram", headers=h(ADMIN)
     ).json()["bpmn"]
     forms = {
         "request-access.json": {"type": "object"},
@@ -428,7 +441,7 @@ def test_republishing_does_not_revoke_a_lane(client):
             "forms": forms,
             "lane_owners": {"System Owner": ["reviewer"]},
         },
-        headers=h(DESIGNER),
+        headers=h(ADMIN),
     )
     assert published.status_code == 201
     assert published.json()["lane_owners"]["System Owner"] == ["reviewer"]
@@ -440,7 +453,7 @@ def test_republishing_does_not_revoke_a_lane(client):
     # Everybody still sees the owner review, despite the narrowed list.
     still_visible = [
         who
-        for who in (ANALYST, REVIEWER, ("northwind", "auditor"))
+        for who in (SUBMITTER, REVIEWER, ("northwind", "reviewer"))
         if [
             t
             for t in open_tasks(client, who)

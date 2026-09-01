@@ -1,19 +1,13 @@
-"""Tenants, people and roles.
+"""Tenants, accounts, roles and passwords.
 
 Two companies carry the same four usernames on purpose: if tenant scoping ever
 leaks, it shows up as the wrong person rather than a tidy error.
 
-The roles map onto the library's V1 RBAC, which is what actually decides who may
-publish a flow:
-
-* ``designer`` -> admin: may import process definitions, and run the lifecycle
-* ``analyst``  -> user: may start flows and work on tasks
-* ``reviewer`` -> manager: may work on tasks but NOT start anything
-* ``auditor``  -> manager: same, kept separate so lane assignment has somebody
-  to hand work to
-
-`reviewer` being unable to start a flow is the library's behaviour, not a
-choice: V1 grants `process.start` to `user` and `admin` but not to `manager`.
+Four product roles, which is one more than the library has. The library's V1 RBAC
+offers exactly `user`, `manager` and `admin`, and only `admin` may import a
+process definition -- so both `admin` and `editor` have to hold the library's
+admin role, and the difference between them (an editor publishes flows but does
+not operate running instances) is enforced by this app. See FINDINGS.
 """
 
 from __future__ import annotations
@@ -29,15 +23,74 @@ from m8flow_bpmn_core.services.authorization import (
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowdesk import store
+from flowdesk.auth import hash_password
+
 TENANTS: dict[str, str] = {"northwind": "Northwind Traders", "initech": "Initech"}
 
-#: username -> (display name, job title, V1 role)
-USERS: dict[str, tuple[str, str, str]] = {
-    "designer": ("Dana Designer", "Process Designer", ROLE_ADMIN),
-    "analyst": ("Amir Analyst", "Business Analyst", ROLE_USER),
-    "reviewer": ("Rosa Reviewer", "Team Lead", ROLE_MANAGER),
-    "auditor": ("Aki Auditor", "Compliance Auditor", ROLE_MANAGER),
+
+class Account:
+    """One seeded account: who they are, and what they may do."""
+
+    __slots__ = ("username", "name", "title", "library_role", "capabilities")
+
+    def __init__(
+        self,
+        username: str,
+        name: str,
+        title: str,
+        library_role: str,
+        capabilities: frozenset[str],
+    ) -> None:
+        self.username = username
+        self.name = name
+        self.title = title
+        self.library_role = library_role
+        self.capabilities = capabilities
+
+
+#: App capabilities. The library covers starting flows and working on tasks; these
+#: are the decisions it has no vocabulary for.
+PUBLISH = "publish"      # add or update a flow
+OPERATE = "operate"      # hold, release, cancel, retry a running instance
+CONFIGURE = "configure"  # workspace settings
+VIEW_ALL = "view_all"    # see other people's runs and the activity log
+
+ACCOUNTS: dict[str, Account] = {
+    "admin": Account(
+        "admin",
+        "Alex Admin",
+        "Workspace Administrator",
+        ROLE_ADMIN,
+        frozenset({PUBLISH, OPERATE, CONFIGURE, VIEW_ALL}),
+    ),
+    "editor": Account(
+        "editor",
+        "Erin Editor",
+        "Process Designer",
+        # Publishing is admin-only in the library, so an editor must hold its
+        # admin role. Withholding OPERATE is this app's doing.
+        ROLE_ADMIN,
+        frozenset({PUBLISH, VIEW_ALL}),
+    ),
+    "reviewer": Account(
+        "reviewer",
+        "Riya Reviewer",
+        "Approver",
+        ROLE_MANAGER,
+        frozenset({VIEW_ALL}),
+    ),
+    "submitter": Account(
+        "submitter",
+        "Sam Submitter",
+        "Team Member",
+        ROLE_USER,
+        frozenset(),
+    ),
 }
+
+#: Demo passwords equal the username, and the sign-in screen says so.
+DEFAULT_PASSWORD = dict.fromkeys(ACCOUNTS, "")
 
 
 def service_url(tenant_id: str) -> str:
@@ -54,26 +107,34 @@ def seed(session: Session) -> None:
         session.flush()
 
         by_role: dict[str, list[int]] = {}
-        for username, (display_name, _title, role) in USERS.items():
+        for account in ACCOUNTS.values():
             user = session.scalar(
                 select(UserModel).where(
                     UserModel.service == service_url(tenant_id),
-                    UserModel.service_id == username,
+                    UserModel.service_id == account.username,
                 )
             )
             if user is None:
                 user = UserModel(
-                    username=username,
-                    email=f"{username}@{tenant_id}.example.com",
+                    username=account.username,
+                    email=f"{account.username}@{tenant_id}.example.com",
                     service=service_url(tenant_id),
-                    service_id=username,
-                    display_name=display_name,
+                    service_id=account.username,
+                    display_name=account.name,
                     created_at_in_seconds=1,
                     updated_at_in_seconds=1,
                 )
                 session.add(user)
                 session.flush()
-            by_role.setdefault(role, []).append(user.id)
+            by_role.setdefault(account.library_role, []).append(user.id)
+
+            if store.credential(session, tenant_id, account.username) is None:
+                store.set_password(
+                    session,
+                    tenant_id=tenant_id,
+                    username=account.username,
+                    password_hash=hash_password(account.username),
+                )
 
         for role, user_ids in by_role.items():
             ensure_v1_role(
@@ -82,5 +143,17 @@ def seed(session: Session) -> None:
     session.commit()
 
 
+def account(username: str) -> Account:
+    found = ACCOUNTS.get(username)
+    if found is None:
+        raise KeyError(username)
+    return found
+
+
 def usernames() -> list[str]:
-    return list(USERS)
+    return list(ACCOUNTS)
+
+
+def can(username: str, capability: str) -> bool:
+    found = ACCOUNTS.get(username)
+    return bool(found and capability in found.capabilities)

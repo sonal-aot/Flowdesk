@@ -1,16 +1,19 @@
-/** Client for the Flowdesk API. */
+/** Client for the Flowdesk API. Identity is a bearer token from /auth/login. */
 
 const BASE: string = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8020'
-const STORED = 'flowdesk.account'
+const TOKEN_KEY = 'flowdesk.token'
 
-export interface Account {
+export interface Company {
   company_id: string
   company: string
+}
+
+export interface DemoAccount {
   username: string
   name: string
   title: string
-  role: string
-  initials: string
+  library_role: string
+  capabilities: string
 }
 
 export interface Me {
@@ -18,10 +21,13 @@ export interface Me {
   username: string
   title: string
   role: string
+  library_role: string
   company: string
   company_id: string
   can_publish: boolean
   can_operate: boolean
+  can_configure: boolean
+  can_view_all: boolean
   open_tasks: number
   people: { username: string; name: string }[]
 }
@@ -60,23 +66,11 @@ export interface TaskRow {
   claimed_by: string | null
 }
 
-/** The subset of JSON Schema the form renderer understands. */
 export interface FormSchema {
   title?: string
   description?: string
   required?: string[]
-  properties?: Record<string, FormField>
-}
-
-export interface FormField {
-  type?: string
-  title?: string
-  description?: string
-  enum?: string[]
-  format?: string
-  default?: unknown
-  minimum?: number
-  maximum?: number
+  properties?: Record<string, unknown>
 }
 
 export interface TaskDetail {
@@ -154,47 +148,39 @@ export class ApiError extends Error {
   }
 }
 
-export type Who = { company_id: string; username: string }
-
-export const session = {
-  read(): Who | null {
+export const token = {
+  read(): string | null {
     try {
-      const raw = localStorage.getItem(STORED)
-      return raw ? JSON.parse(raw) : null
+      return localStorage.getItem(TOKEN_KEY)
     } catch {
       return null
     }
   },
-  write(account: Account) {
+  write(value: string) {
     try {
-      localStorage.setItem(
-        STORED,
-        JSON.stringify({
-          company_id: account.company_id,
-          username: account.username,
-        }),
-      )
+      localStorage.setItem(TOKEN_KEY, value)
     } catch {
       // A private window still works, just not across reloads.
     }
   },
   clear() {
     try {
-      localStorage.removeItem(STORED)
+      localStorage.removeItem(TOKEN_KEY)
     } catch {
       // ignore
     }
   },
 }
 
-async function call<T>(who: Who | null, path: string, init: RequestInit = {}): Promise<T> {
+async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const bearer = token.read()
   let response: Response
   try {
     response = await fetch(`${BASE}${path}`, {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        ...(who ? { 'X-Tenant-Id': who.company_id, 'X-User': who.username } : {}),
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
         ...(init.headers ?? {}),
       },
     })
@@ -213,67 +199,68 @@ async function call<T>(who: Who | null, path: string, init: RequestInit = {}): P
 }
 
 export const api = {
-  accounts: () => call<Account[]>(null, '/accounts'),
-  me: (who: Who) => call<Me>(who, '/me'),
+  companies: () => call<Company[]>('/companies'),
+  demoAccounts: () => call<DemoAccount[]>('/demo-accounts'),
+  login: (company_id: string, username: string, password: string) =>
+    call<{ token: string; expires_at: number }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ company_id, username, password }),
+    }),
 
-  flows: (who: Who) => call<FlowSummary[]>(who, '/flows'),
-  flow: (who: Who, processId: string) =>
-    call<FlowSummary>(who, `/flows/${processId}`),
-  diagram: (who: Who, processId: string) =>
-    call<{ bpmn: string }>(who, `/flows/${processId}/diagram`),
-  operations: (who: Who) =>
-    call<{ operation_id: string; description: string }[]>(who, '/operations'),
-  inspect: (who: Who, bpmn: string) =>
-    call<InspectReport>(who, '/inspect', {
-      method: 'POST',
-      body: JSON.stringify({ bpmn }),
-    }),
-  publish: (
-    who: Who,
-    payload: {
-      bpmn: string
-      name?: string
-      dmn?: string | null
-      forms: Record<string, unknown>
-      lane_owners: Record<string, string[]>
-    },
-  ) =>
-    call<FlowSummary>(who, '/flows', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  start: (who: Who, processId: string) =>
-    call<{ id: number; status: string }>(who, `/flows/${processId}/start`, {
+  me: () => call<Me>('/me'),
+
+  flows: () => call<FlowSummary[]>('/flows'),
+  flow: (processId: string) => call<FlowSummary>(`/flows/${processId}`),
+  diagram: (processId: string) =>
+    call<{ bpmn: string }>(`/flows/${processId}/diagram`),
+  operations: () =>
+    call<{ operation_id: string; description: string }[]>('/operations'),
+  inspect: (bpmn: string) =>
+    call<InspectReport>('/inspect', { method: 'POST', body: JSON.stringify({ bpmn }) }),
+  publish: (payload: {
+    bpmn: string
+    name?: string
+    dmn?: string | null
+    forms: Record<string, unknown>
+    lane_owners: Record<string, string[]>
+  }) => call<FlowSummary>('/flows', { method: 'POST', body: JSON.stringify(payload) }),
+  start: (processId: string) =>
+    call<{ id: number; status: string }>(`/flows/${processId}/start`, {
       method: 'POST',
       body: JSON.stringify({}),
     }),
 
-  tasks: (who: Who, mine: boolean) =>
-    call<TaskRow[]>(who, `/tasks?mine=${mine}`),
-  task: (who: Who, id: number) => call<TaskDetail>(who, `/tasks/${id}`),
-  completeTask: (who: Who, id: number, payload: Record<string, unknown>) =>
+  tasks: (mine: boolean) => call<TaskRow[]>(`/tasks?mine=${mine}`),
+  task: (id: number) => call<TaskDetail>(`/tasks/${id}`),
+  completeTask: (id: number, payload: Record<string, unknown>) =>
     call<{ id: number; instance_id: number; instance_status: string }>(
-      who,
       `/tasks/${id}/complete`,
       { method: 'POST', body: JSON.stringify({ payload }) },
     ),
 
-  instances: (who: Who, scope: string, status?: string) =>
+  instances: (scope: string, status?: string) =>
     call<InstanceRow[]>(
-      who,
       `/instances?scope=${scope}${status ? `&status=${status}` : ''}`,
     ),
-  instance: (who: Who, id: number) => call<InstanceDetail>(who, `/instances/${id}`),
-  lifecycle: (who: Who, id: number, action: string) =>
-    call<{ id: number; status: string }>(who, `/instances/${id}/${action}`, {
+  instance: (id: number) => call<InstanceDetail>(`/instances/${id}`),
+  lifecycle: (id: number, action: string) =>
+    call<{ id: number; status: string }>(`/instances/${id}/${action}`, {
       method: 'POST',
     }),
-  scheduleRetry: (who: Who, id: number, inSeconds: number) =>
-    call<{ id: number; retry_in_seconds: number }>(
-      who,
-      `/instances/${id}/schedule-retry`,
-      { method: 'POST', body: JSON.stringify({ in_seconds: inSeconds }) },
-    ),
 
-  activity: (who: Who) => call<ActivityRow[]>(who, '/activity'),
+  activity: () => call<ActivityRow[]>('/activity'),
+}
+
+export const STATUS_COLOR: Record<
+  string,
+  'success' | 'error' | 'warning' | 'info' | 'default'
+> = {
+  complete: 'success',
+  error: 'error',
+  terminated: 'error',
+  suspended: 'warning',
+  user_input_required: 'info',
+  waiting: 'info',
+  running: 'info',
+  not_started: 'default',
 }

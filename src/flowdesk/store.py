@@ -35,6 +35,23 @@ class FlowAsset(AppBase):
     updated_at_in_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class Credential(AppBase):
+    """A password for one account in one company.
+
+    The library manages neither users nor credentials, so this is ours.
+    """
+
+    __tablename__ = "credential"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "username", name="credential_unique"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class ConnectorCall(AppBase):
     """What a service task asked for, and what came back."""
 
@@ -128,3 +145,26 @@ def log_call(
     session.add(call)
     session.flush()
     return call
+
+
+def credential(session: Session, tenant_id: str, username: str) -> Credential | None:
+    return session.scalar(
+        select(Credential).where(
+            Credential.tenant_id == tenant_id, Credential.username == username
+        )
+    )
+
+
+def set_password(
+    session: Session, *, tenant_id: str, username: str, password_hash: str
+) -> Credential:
+    existing = credential(session, tenant_id, username)
+    if existing is not None:
+        existing.password_hash = password_hash
+        return existing
+    row = Credential(
+        tenant_id=tenant_id, username=username, password_hash=password_hash
+    )
+    session.add(row)
+    session.flush()
+    return row

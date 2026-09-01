@@ -126,6 +126,31 @@ up front.
 
 ---
 
+## 7. Three library roles cannot express four product roles — *medium*
+
+This app has four roles: admin, editor, reviewer, submitter. The library has
+exactly three — `user`, `manager`, `admin` — and `process_definition.import` is
+admin-only. So an **editor**, whose whole job is publishing flows, must be given
+the library's *admin* role, which also grants suspend, resume, terminate and
+retry.
+
+The product wants an editor who publishes but does not operate running
+instances. The library has no way to say that, so the app keeps its own
+capability set and checks it before every lifecycle call. The engine would
+happily allow what the app forbids, which means the two permission models can
+drift apart — and only one of them is enforced by the engine.
+
+**Suggestion:** let a host grant individual command keys to a role without
+handing over the whole admin set. `grant_command_permissions_to_group` already
+does exactly this; it is just not reachable through a public API, and
+`ensure_v1_role` overwrites nothing when re-run, so there is no supported way to
+build a custom role.
+
+*Evidence:* `src/flowdesk/seed.py` capability sets;
+`tests/test_auth.py::test_an_editor_publishes_but_does_not_operate`
+
+---
+
 ## 6. Confirmed again from app #1
 
 These reproduced here unchanged, which suggests they are structural rather than
@@ -167,3 +192,4 @@ particular to one app:
 2. Make lane ownership revocable (#2).
 3. Populate `form_file_name` (#3), or remove the columns.
 4. Add the four read queries a console needs (#4).
+5. Make roles composable so a host can express its own (#7).
