@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The simplest useful shape: somebody fills in a form, then somebody else
+  decides. Two lanes, two forms, one gateway. No decision table, no service
+  task, nothing to configure.
+
+  Assign the Requester lane to whoever raises requests and the Approver lane to
+  whoever decides. Only the Approver lane sees the review step.
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
+  id="Definitions_two_step_request" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collaboration_two_step_request">
+    <bpmn:participant id="Participant_two_step_request" name="Two Step Request"
+      processRef="Process_two_step_request" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_two_step_request" name="Two Step Request" isExecutable="true">
+    <bpmn:laneSet id="LaneSet_two_step_request">
+      <bpmn:lane id="Lane_requester" name="Requester">
+        <bpmn:flowNodeRef>start</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_submit</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_approver" name="Approver">
+        <bpmn:flowNodeRef>task_review</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>gateway_decision</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_approved</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_rejected</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+
+    <bpmn:startEvent id="start" name="Request raised">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="task_submit" name="Submit Request">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="submit-request.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:userTask id="task_review" name="Review Request">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="review-request.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="gateway_decision" name="Approved?">
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f_yes</bpmn:outgoing>
+      <bpmn:outgoing>f_no</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:endEvent id="end_approved" name="Approved">
+      <bpmn:incoming>f_yes</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="end_rejected" name="Rejected">
+      <bpmn:incoming>f_no</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="task_submit" />
+    <bpmn:sequenceFlow id="f2" sourceRef="task_submit" targetRef="task_review" />
+    <bpmn:sequenceFlow id="f3" sourceRef="task_review" targetRef="gateway_decision" />
+    <bpmn:sequenceFlow id="f_yes" name="Approved" sourceRef="gateway_decision" targetRef="end_approved">
+      <bpmn:conditionExpression>decision == "approved"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_no" name="Rejected" sourceRef="gateway_decision" targetRef="end_rejected">
+      <bpmn:conditionExpression>decision == "rejected"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+  </bpmn:process>
+</bpmn:definitions>

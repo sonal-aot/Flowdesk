@@ -151,16 +151,50 @@ Sign in as `admin` or `editor`, go to **Publish**, and upload a `.bpmn` file. Th
 console reads the diagram and shows you what it found; you then assign each lane
 and supply a JSON Schema for any form the diagram names.
 
-Three example diagrams ship with the tests, ready to upload:
+Four example diagrams ship in [`examples/`](./examples), ready to upload:
 
-| File in `tests/fixtures/` | Exercises |
+| File | Shape |
 |---|---|
-| `expense_approval.bpmn` + `.dmn` | DMN decision table, exclusive gateway, script task, service task, two forms |
-| `incident_response.bpmn` | Parallel gateway split and join, three lanes, three forms |
-| `access_request.bpmn` | Interrupting boundary timer escalating to another lane |
+| `two_step_request.bpmn` | **Start here.** One person fills a form, somebody else approves or rejects it. Two lanes, two forms, one gateway |
+| `expense_approval.bpmn` + `.dmn` | Adds a decision table: small claims skip the approver entirely |
+| `incident_response.bpmn` | Two people work in parallel; the flow waits for both |
+| `access_request.bpmn` | If the reviewer does not respond in time, the work escalates to another lane |
 
 Each has a matching `.forms.json` holding the schemas its steps ask for — paste
 the relevant one into the form boxes on the publish screen.
+
+### A form, then an approval
+
+That is the commonest shape and `two_step_request.bpmn` is exactly it:
+
+```
+Requester   Submit Request ──┐        (form: subject, details, urgency, needed by)
+                             ↓
+Approver                Review Request  (form: approved / rejected + comment)
+                             ↓
+                        Approved? ──── approved ──→ done
+                                  └──── rejected ──→ done
+```
+
+Publish it with **Requester → submitter** and **Approver → reviewer**, then:
+
+1. Sign in as `submitter`, **Flows → Start**, fill the form, submit.
+2. It leaves your worklist entirely and appears in the reviewer's.
+3. Sign in as `reviewer`, open the task — **what the requester submitted is shown
+   above the decision form**, so you can see what you are approving.
+4. Approve or reject. The gateway routes on `decision` and the run completes.
+
+To build your own, that diagram is the template. The three things that make it
+work are:
+
+- **A lane per person** — the lane is what decides whose worklist a step lands in.
+- **`formJsonSchemaFilename`** on each user task, naming the schema you upload
+  with it.
+- **A field name shared between the form and the gateway** — the review form
+  writes `decision`, and the sequence flows test `decision == "approved"`.
+  Anything a form collects becomes available to later steps.
+
+Add more steps by adding more user tasks and lanes; the console needs no changes.
 
 ### Lanes decide who sees what
 
@@ -210,7 +244,7 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 | `src/flowdesk/connectors.py` | The service-task connectors and their registry scope |
 | `src/flowdesk/store.py` | App-owned tables: published files and the activity log |
 | `src/flowdesk/lane_owners.py` | Makes lane membership match exactly what the publisher assigned |
-| `tests/fixtures/` | Example diagrams to upload, with their form schemas |
+| `examples/` | Example diagrams to upload, with their form schemas |
 | `frontend/src/theme.ts` | MUI theme shaped after m8flow's own |
 | `frontend/src/App.tsx` | App shell: collapsible icon nav, theme switch, user menu |
 | `frontend/src/Login.tsx` | Sign-in |
@@ -220,11 +254,11 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ## Tests
 
 ```bash
-uv run pytest                    # 47 tests
+uv run pytest                    # 48 tests
 cd frontend && npm run build     # type-check and production build
 ```
 
-Covers all three example diagrams end to end — DMN routing both ways, a parallel
+Covers all four example diagrams end to end — DMN routing both ways, a parallel
 join waiting for both branches, a boundary timer actually firing — plus
 publishing a brand-new flow and running it, every permission boundary, lane
 assignment actually restricting and narrowing, company isolation, and the login

@@ -1,0 +1,31 @@
+{
+  "submit-request.json": {
+    "title": "Submit your request",
+    "type": "object",
+    "required": ["subject", "details"],
+    "properties": {
+      "subject": { "type": "string", "title": "What are you asking for?" },
+      "details": { "type": "string", "title": "Details" },
+      "urgency": {
+        "type": "string",
+        "title": "Urgency",
+        "enum": ["low", "normal", "high"],
+        "default": "normal"
+      },
+      "needed_by": { "type": "string", "format": "date", "title": "Needed by" }
+    }
+  },
+  "review-request.json": {
+    "title": "Review the request",
+    "type": "object",
+    "required": ["decision"],
+    "properties": {
+      "decision": {
+        "type": "string",
+        "title": "Decision",
+        "enum": ["approved", "rejected"]
+      },
+      "reviewer_comment": { "type": "string", "title": "Comment" }
+    }
+  }
+}

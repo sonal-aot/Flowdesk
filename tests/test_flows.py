@@ -542,3 +542,67 @@ def test_lane_owners_are_per_company(client):
     ).json()
     assert northwind["lane_owners"]["Approver"] == ["reviewer"]
     assert initech["lane_owners"]["Approver"] == ["editor"]
+
+
+def test_one_person_fills_a_form_then_another_decides(client):
+    """The plainest shape: submit, then somebody else approves or rejects.
+
+    Both branches are checked, and so is the thing that makes it useful -- the
+    reviewer can see what was submitted before deciding.
+    """
+    publish_fixture(client, "two_step_request")
+
+    for verdict, expected in (("approved", "complete"), ("rejected", "complete")):
+        instance_id = start(client, "Process_two_step_request")
+
+        # The requester fills in the first form.
+        submit_task = next(
+            t for t in open_tasks(client) if t["instance_id"] == instance_id
+        )
+        assert submit_task["name"] == "Submit Request"
+        form = client.get(f"/tasks/{submit_task['id']}", headers=h(SUBMITTER)).json()
+        assert form["form"]["title"] == "Submit your request"
+        assert form["form"]["required"] == ["subject", "details"]
+
+        complete(
+            client,
+            submit_task["id"],
+            {
+                "subject": "New laptop",
+                "details": "Mine will not charge",
+                "urgency": "high",
+            },
+        )
+
+        # It is now the approver's, and nobody else's.
+        assert not [t for t in open_tasks(client) if t["instance_id"] == instance_id]
+        review = next(
+            t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+        )
+        assert review["name"] == "Review Request"
+        assert review["lane"] == "Approver"
+
+        # The approver can see what was submitted before deciding.
+        opened = client.get(f"/tasks/{review['id']}", headers=h(REVIEWER)).json()
+        assert opened["known_data"]["subject"] == "New laptop"
+        assert opened["known_data"]["urgency"] == "high"
+        assert opened["form"]["properties"]["decision"]["enum"] == [
+            "approved",
+            "rejected",
+        ]
+
+        result = complete(
+            client,
+            review["id"],
+            {"decision": verdict, "reviewer_comment": "noted"},
+            REVIEWER,
+        )
+        assert result["instance_status"] == expected
+
+        detail = instance(client, instance_id)
+        assert detail["data"]["decision"] == verdict
+        assert [step["name"] for step in detail["steps"]] == [
+            "Submit Request",
+            "Review Request",
+        ]
+        assert all(step["done"] for step in detail["steps"])

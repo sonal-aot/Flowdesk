@@ -9,11 +9,15 @@ from fastapi.testclient import TestClient
 
 from flowdesk import db
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+FIXTURES = pathlib.Path(__file__).parent.parent / "examples"
 
 #: Lane assignments used by the tests. The app ships no flows, so every test
 #: publishes what it needs -- which is also how a real workspace starts.
 FIXTURE_LANES: dict[str, dict[str, list[str]]] = {
+    "two_step_request": {
+        "Requester": ["submitter"],
+        "Approver": ["reviewer"],
+    },
     "expense_approval": {
         "Submitter": ["submitter"],
         "Approver": ["reviewer"],
