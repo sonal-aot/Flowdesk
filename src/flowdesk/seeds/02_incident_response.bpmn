@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
+  id="Definitions_incident" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collaboration_incident">
+    <bpmn:participant id="Participant_incident" name="Incident Response" processRef="Process_incident_response" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_incident_response" name="Incident Response" isExecutable="true">
+    <bpmn:laneSet id="LaneSet_incident">
+      <bpmn:lane id="Lane_reporter" name="Reporter">
+        <bpmn:flowNodeRef>start</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_report</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>split</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>join</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_notify</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_closed</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_engineering" name="Engineering">
+        <bpmn:flowNodeRef>task_triage</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_support" name="Support">
+        <bpmn:flowNodeRef>task_comms</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+
+    <bpmn:startEvent id="start" name="Incident raised">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="task_report" name="Report The Incident">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="report-incident.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:parallelGateway id="split" name="Work in parallel">
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f_tech</bpmn:outgoing>
+      <bpmn:outgoing>f_comms</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:userTask id="task_triage" name="Technical Triage">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="triage.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_tech</bpmn:incoming>
+      <bpmn:outgoing>f_tech_done</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:userTask id="task_comms" name="Customer Communication">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="comms.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_comms</bpmn:incoming>
+      <bpmn:outgoing>f_comms_done</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:parallelGateway id="join" name="Both done">
+      <bpmn:incoming>f_tech_done</bpmn:incoming>
+      <bpmn:incoming>f_comms_done</bpmn:incoming>
+      <bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:serviceTask id="task_notify" name="Publish Postmortem Stub">
+      <bpmn:extensionElements>
+        <spiffworkflow:serviceTaskOperator id="log/Write">
+          <spiffworkflow:parameters>
+            <spiffworkflow:parameter id="incident" type="any" value="title" />
+            <spiffworkflow:parameter id="severity" type="any" value="severity" />
+            <spiffworkflow:parameter id="root_cause" type="any" value="root_cause" />
+            <spiffworkflow:parameter id="customers_told" type="any" value="channel" />
+          </spiffworkflow:parameters>
+        </spiffworkflow:serviceTaskOperator>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end_closed" name="Incident closed">
+      <bpmn:incoming>f4</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="task_report" />
+    <bpmn:sequenceFlow id="f2" sourceRef="task_report" targetRef="split" />
+    <bpmn:sequenceFlow id="f_tech" sourceRef="split" targetRef="task_triage" />
+    <bpmn:sequenceFlow id="f_comms" sourceRef="split" targetRef="task_comms" />
+    <bpmn:sequenceFlow id="f_tech_done" sourceRef="task_triage" targetRef="join" />
+    <bpmn:sequenceFlow id="f_comms_done" sourceRef="task_comms" targetRef="join" />
+    <bpmn:sequenceFlow id="f3" sourceRef="join" targetRef="task_notify" />
+    <bpmn:sequenceFlow id="f4" sourceRef="task_notify" targetRef="end_closed" />
+  </bpmn:process>
+</bpmn:definitions>

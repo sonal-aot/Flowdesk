@@ -1,0 +1,36 @@
+{
+  "submit-expense.json": {
+    "title": "Submit an expense claim",
+    "type": "object",
+    "required": ["amount", "purpose"],
+    "properties": {
+      "amount": {
+        "type": "integer",
+        "title": "Amount",
+        "description": "Claims over 100 need an approver",
+        "minimum": 1
+      },
+      "purpose": { "type": "string", "title": "What was it for?" },
+      "cost_centre": {
+        "type": "string",
+        "title": "Cost centre",
+        "enum": ["Engineering", "Sales", "Operations", "Marketing"]
+      },
+      "incurred_on": { "type": "string", "format": "date", "title": "Date incurred" },
+      "receipt_attached": { "type": "boolean", "title": "Receipt attached" }
+    }
+  },
+  "approve-expense.json": {
+    "title": "Approve or decline",
+    "type": "object",
+    "required": ["decision"],
+    "properties": {
+      "decision": {
+        "type": "string",
+        "title": "Decision",
+        "enum": ["approved", "declined"]
+      },
+      "approver_note": { "type": "string", "title": "Note" }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "request-access.json": {
+    "title": "Request access",
+    "type": "object",
+    "required": ["system", "access_level", "reason"],
+    "properties": {
+      "system": {
+        "type": "string",
+        "title": "System",
+        "enum": ["Production database", "Billing console", "CI pipeline", "Analytics"]
+      },
+      "access_level": {
+        "type": "string",
+        "title": "Level",
+        "enum": ["read", "write", "admin"],
+        "default": "read"
+      },
+      "reason": { "type": "string", "title": "Why do you need it?" },
+      "until": { "type": "string", "format": "date", "title": "Needed until" }
+    }
+  },
+  "owner-review.json": {
+    "title": "Review the request",
+    "type": "object",
+    "required": ["verdict"],
+    "properties": {
+      "verdict": { "type": "string", "title": "Verdict", "enum": ["granted", "refused"] },
+      "conditions": { "type": "string", "title": "Conditions" }
+    }
+  }
+}

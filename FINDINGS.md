@@ -1,0 +1,169 @@
+# m8flow-bpmn-core — Integration Findings, app #2
+
+Sample app #2 of **M8F-421**: Flowdesk, a generic workflow console. Designers
+publish arbitrary BPMN; everybody else picks a flow and runs it. Consumes
+`m8flow-bpmn-core` 0.1.0 **as a built wheel**.
+
+App #1 (TimeOff) was a single-purpose app with one hardcoded diagram, and its 21
+findings are in that repo. This app hardcodes nothing about any flow, which
+surfaces a different class of problem: what a host needs from the library when it
+does not know the process in advance.
+
+Every finding below has a test or a reproduction in this repo.
+
+---
+
+## 1. Publishing a diagram is arbitrary code execution — *critical*
+
+A BPMN script task executes Python in the host process, unsandboxed. Reproduced
+end to end through the API: a published diagram containing
+
+```xml
+<bpmn:scriptTask id="probe">
+  <bpmn:script>open("/tmp/probe.txt", "w").write("...")</bpmn:script>
+</bpmn:scriptTask>
+```
+
+wrote that file to disk when an ordinary user started the flow. `__import__("os")`
+also resolves. So `process_definition.import` is not a workflow permission — it is
+**remote code execution as the server**, and anybody who can reach the flow can
+trigger it.
+
+This matters most for exactly the product this app is: a console where "designers
+can add new flows" is the whole point. In m8flow terms, whoever can publish a
+process model owns the backend.
+
+**What this app does about it:** the publish screen says so plainly, and
+publishing stays behind the library's admin-only check. That is mitigation, not a
+fix.
+
+**Suggestions**, roughly in order of value:
+
+1. Say this explicitly in `doc/api.md` and `doc/gaps.md`. Right now nothing warns
+   an implementer, and the natural reading of "designers upload BPMN" is that it
+   is a data operation.
+2. Offer a restricted script engine — SpiffWorkflow supports supplying one — and
+   make it the default, with the permissive engine opt-in.
+3. Consider running script tasks out of process for hosts that accept untrusted
+   diagrams.
+
+*Evidence:* reproduced via `POST /flows` then `POST /flows/{id}/start`
+
+---
+
+## 2. Lane ownership can be widened but never revoked — *high*
+
+Publishing a new version with a **narrower** lane-owner list does not take anybody
+off the lane. The bundled flows are published with every account owning every
+lane; republishing with `{"System Owner": ["reviewer"]}` left all four accounts
+still able to see and claim that lane's task.
+
+So a host cannot remove a leaver from a lane, or correct an over-permissive first
+publish, by republishing. The only route is reaching into
+`user_group_assignment` directly.
+
+**Suggestion:** make `_sync_lane_owner_group_assignments` reconcile — remove
+assignments no longer named — or expose a public command for lane membership so
+hosts are not editing library tables.
+
+*Evidence:* `tests/test_flows.py::test_republishing_does_not_revoke_a_lane`
+
+---
+
+## 3. `form_file_name` exists but is never populated — *medium*
+
+`HumanTaskModel` has `form_file_name` and `ui_form_file_name` columns, and the
+BPMN carries `formJsonSchemaFilename` in `spiffworkflow:properties`. The library
+writes `None` to both, unconditionally
+(`workflow_runtime.py:1909`), and never reads the extension property.
+
+A generic console therefore has to parse the diagram itself to find out which
+form a task wants — which means re-implementing part of the BPMN parser in the
+host, and keeping it in step with whatever the modeller emits.
+
+**Suggestion:** populate the columns from the extension properties. The schema
+already has the right shape; only the wiring is missing. Half-present features
+are worse than absent ones, because an implementer reasonably assumes the column
+is filled in.
+
+*Evidence:* `src/flowdesk/bpmn_inspect.py` exists entirely to work around this
+
+---
+
+## 4. Nothing in the public API lists what is published — *medium*
+
+There is no query for process definitions. A console whose main screen is "here
+are the flows you can start" cannot be built on the public API at all: this app
+imports `BpmnProcessDefinitionModel` and writes its own `select()`.
+
+Related gaps in the read surface, all needed by an operations screen:
+
+* no query for a definition by identifier, or for its versions
+* no query for task history (only `GetPendingTasksQuery`, which returns open work)
+* `ListProcessInstancesQuery` takes a status but has no pagination or ordering, so
+  a host must fetch every instance and sort in memory
+
+**Suggestion:** a small read-side addition — `ListProcessDefinitionsQuery`,
+`GetProcessDefinitionQuery`, `GetProcessInstanceTasksQuery` — would let a console
+stay on the public contract.
+
+*Evidence:* `src/flowdesk/main.py`, `definitions_for`
+
+---
+
+## 5. Process instance ids are how a caller names a flow, but definitions are not — *low*
+
+Starting an instance needs `bpmn_process_definition_id` (a database id) **and**
+`bpmn_process_id` (the id inside the XML). A console has both, but the pairing is
+easy to get wrong and nothing validates that the two refer to the same process —
+mismatching them fails deep inside the runtime rather than at the command
+boundary.
+
+**Suggestion:** derive `bpmn_process_id` from the definition, or validate the pair
+up front.
+
+*Evidence:* `src/flowdesk/main.py`, `start_flow`
+
+---
+
+## 6. Confirmed again from app #1
+
+These reproduced here unchanged, which suggests they are structural rather than
+particular to one app:
+
+* **Service-task failures cannot be audited from inside the caller's
+  transaction.** Same buffer-then-write-after-rollback dance as TimeOff
+  (`src/flowdesk/connectors.py`).
+* **Script-task variables never reach process metadata.** The expense flow's
+  script sets `decision = "approved"`; it never appears in the instance data, so
+  the console cannot show what the automatic branch decided.
+* **V1 roles are not a hierarchy.** `reviewer` (manager) cannot start a flow while
+  `analyst` (user) can — pinned in
+  `tests/test_flows.py::test_a_reviewer_cannot_start_a_flow`.
+* **The read side has no authorization.** Every query trusts the tenant id it is
+  given, so `identity.py` remains load-bearing.
+
+---
+
+## What worked well
+
+* **A completely generic host is possible.** Three bundled flows plus anything a
+  designer uploads run through one code path, with no per-flow code. The library
+  genuinely does not care what the diagram contains.
+* **BPMN coverage held up.** Exclusive and parallel gateways, DMN decision
+  tables, script tasks, interrupting boundary timers and service tasks all worked
+  first try, including a parallel join that correctly waited for both branches.
+* **The connector seam is excellent.** Two connectors serving four operations,
+  registered per request, with no library changes.
+* **The error hierarchy carried the whole API.** Mapping `BpmnCoreError`
+  subclasses onto status codes covers every failure the console can produce.
+
+---
+
+## Ranked asks for the library team
+
+1. Document — and ideally sandbox — script-task execution (#1). It changes what
+   the publish permission means.
+2. Make lane ownership revocable (#2).
+3. Populate `form_file_name` (#3), or remove the columns.
+4. Add the four read queries a console needs (#4).

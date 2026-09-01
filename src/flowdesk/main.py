@@ -1,0 +1,880 @@
+"""Flowdesk -- a workflow console on m8flow-bpmn-core.
+
+Designers publish BPMN flows; everybody else picks one, starts it and works
+through its tasks. Nothing about any particular flow is compiled in: the console
+reads what it needs out of the diagram, and the library runs whatever it is
+given.
+
+Who may publish is not this app's decision -- `process_definition.import` is an
+admin-only command in the library's V1 RBAC, so the engine enforces it.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from m8flow_bpmn_core import api
+from m8flow_bpmn_core.errors import NotFoundError, ValidationError
+from m8flow_bpmn_core.models.bpmn_process_definition import (
+    BpmnProcessDefinitionModel,
+)
+from m8flow_bpmn_core.models.human_task import HumanTaskModel
+from m8flow_bpmn_core.models.user import UserModel
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from flowdesk import bpmn_inspect, store
+from flowdesk.connectors import available_operations, service_tasks
+from flowdesk.db import get_session, init_schema, session_factory
+from flowdesk.errors import register_error_handlers
+from flowdesk.identity import Caller, current_caller
+from flowdesk.scheduler import scheduler_running
+from flowdesk.seed import TENANTS, USERS, seed, service_url, usernames
+
+SEEDS_DIR = Path(__file__).parent / "seeds"
+
+
+# --------------------------------------------------------------------------- #
+# Bodies
+# --------------------------------------------------------------------------- #
+
+
+class PublishIn(BaseModel):
+    bpmn: str = Field(min_length=1)
+    name: str | None = None
+    dmn: str | None = None
+    #: filename -> JSON Schema document, for the diagram's user-task forms
+    forms: dict[str, Any] = Field(default_factory=dict)
+    #: lane name -> usernames who pick up that lane's work
+    lane_owners: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class InspectIn(BaseModel):
+    bpmn: str = Field(min_length=1)
+
+
+class StartIn(BaseModel):
+    summary: str | None = None
+
+
+class CompleteIn(BaseModel):
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScheduleRetryIn(BaseModel):
+    in_seconds: int = Field(default=60, ge=1, le=86_400)
+
+
+def now() -> int:
+    return int(time.time())
+
+
+# --------------------------------------------------------------------------- #
+# Startup
+# --------------------------------------------------------------------------- #
+
+
+def publish(
+    session: Session,
+    *,
+    tenant_id: str,
+    actor_user_id: int,
+    body: PublishIn,
+) -> tuple[BpmnProcessDefinitionModel, bpmn_inspect.Flow]:
+    """Store a flow's files and import its definition.
+
+    ``actor_user_id`` is who the library authorizes, so it is always the real
+    caller -- never a service account.
+    """
+    flow = bpmn_inspect.inspect(body.bpmn)
+    if flow.errors:
+        raise ValidationError(" ".join(flow.errors))
+
+    missing = [
+        name
+        for name in flow.form_files
+        if name not in body.forms and not name.endswith("uischema.json")
+    ]
+    if missing:
+        raise ValidationError(
+            "This diagram asks for form schemas that were not supplied: "
+            + ", ".join(missing)
+        )
+
+    lane_owners = {
+        lane: body.lane_owners.get(lane) or usernames() for lane in flow.lanes
+    }
+    unknown = sorted(
+        {
+            person
+            for owners in lane_owners.values()
+            for person in owners
+            if person not in USERS
+        }
+    )
+    if unknown:
+        raise ValidationError(f"No such people: {', '.join(unknown)}")
+
+    definition = api.execute_command(
+        session,
+        api.ImportBpmnProcessDefinitionCommand(
+            tenant_id=tenant_id,
+            bpmn_identifier=flow.process_id,
+            user_id=actor_user_id,
+            bpmn_name=body.name or flow.name,
+            source_bpmn_xml=body.bpmn,
+            source_dmn_xml=body.dmn,
+            properties_json={
+                "lane_owners": lane_owners,
+                "display_name": body.name or flow.name,
+            },
+            created_at_in_seconds=now(),
+            updated_at_in_seconds=now(),
+        ),
+    )
+
+    store.save_asset(
+        session,
+        tenant_id=tenant_id,
+        process_id=flow.process_id,
+        filename="process.bpmn",
+        kind="bpmn",
+        content=body.bpmn,
+    )
+    if body.dmn:
+        store.save_asset(
+            session,
+            tenant_id=tenant_id,
+            process_id=flow.process_id,
+            filename="decisions.dmn",
+            kind="dmn",
+            content=body.dmn,
+        )
+    for filename, schema in body.forms.items():
+        store.save_asset(
+            session,
+            tenant_id=tenant_id,
+            process_id=flow.process_id,
+            filename=filename,
+            kind="form",
+            content=json.dumps(schema),
+        )
+    return definition, flow
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_schema()
+    session = session_factory()()
+    try:
+        seed(session)
+        install_seed_flows(session)
+        session.commit()
+    finally:
+        session.close()
+    async with scheduler_running():
+        yield
+
+
+def install_seed_flows(session: Session) -> None:
+    """Publish the bundled example flows so the console is not empty on day one."""
+    for tenant_id in TENANTS:
+        designer = session.scalar(
+            select(UserModel).where(
+                UserModel.service == service_url(tenant_id),
+                UserModel.service_id == "designer",
+            )
+        )
+        if designer is None:  # pragma: no cover - seeding guarantees this
+            continue
+        for bpmn_path in sorted(SEEDS_DIR.glob("*.bpmn")):
+            dmn_path = bpmn_path.with_suffix(".dmn")
+            forms_path = bpmn_path.with_suffix(".forms.json")
+            body = PublishIn(
+                bpmn=bpmn_path.read_text(encoding="utf-8"),
+                dmn=dmn_path.read_text(encoding="utf-8") if dmn_path.exists() else None,
+                forms=(
+                    json.loads(forms_path.read_text(encoding="utf-8"))
+                    if forms_path.exists()
+                    else {}
+                ),
+            )
+            publish(
+                session, tenant_id=tenant_id, actor_user_id=designer.id, body=body
+            )
+
+
+app = FastAPI(title="Flowdesk", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get(
+        "FLOWDESK_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+register_error_handlers(app)
+
+CallerDep = Depends(current_caller)
+SessionDep = Depends(get_session)
+
+
+# --------------------------------------------------------------------------- #
+# Shared reads
+# --------------------------------------------------------------------------- #
+
+
+def people(session: Session, tenant_id: str) -> dict[int, UserModel]:
+    rows = session.scalars(
+        select(UserModel).where(UserModel.service == service_url(tenant_id))
+    ).all()
+    return {row.id: row for row in rows}
+
+
+def display_name(directory: dict[int, UserModel], user_id: int | None) -> str | None:
+    person = directory.get(user_id) if user_id is not None else None
+    return person.display_name or person.username if person else None
+
+
+def definitions_for(
+    session: Session, tenant_id: str, process_id: str | None = None
+) -> list[BpmnProcessDefinitionModel]:
+    """The library has no read query for definitions, so go to the model (#6)."""
+    statement = select(BpmnProcessDefinitionModel).where(
+        BpmnProcessDefinitionModel.m8f_tenant_id == tenant_id
+    )
+    if process_id is not None:
+        statement = statement.where(
+            BpmnProcessDefinitionModel.bpmn_identifier == process_id
+        )
+    return list(
+        session.scalars(statement.order_by(BpmnProcessDefinitionModel.id.desc()))
+    )
+
+
+def newest_definition(
+    session: Session, tenant_id: str, process_id: str
+) -> BpmnProcessDefinitionModel:
+    found = definitions_for(session, tenant_id, process_id)
+    if not found:
+        raise NotFoundError(f"No flow is published with the id {process_id!r}")
+    return found[0]
+
+
+def flow_summary(definition: BpmnProcessDefinitionModel) -> dict[str, Any]:
+    properties = definition.properties_json or {}
+    flow = bpmn_inspect.inspect(definition.source_bpmn_xml or "")
+    return {
+        "process_id": definition.bpmn_identifier,
+        "name": properties.get("display_name") or definition.bpmn_name or flow.name,
+        "version_id": definition.id,
+        "lanes": list(flow.lanes),
+        "lane_owners": properties.get("lane_owners") or {},
+        "steps": [
+            {"name": task.name, "lane": task.lane, "has_form": bool(task.form_schema)}
+            for task in flow.user_tasks
+        ],
+        "decisions": list(flow.decisions),
+        "service_operations": list(flow.service_operations),
+        "timers": list(flow.timers),
+        "gateways": sorted(set(flow.gateways)),
+        "script_tasks": flow.script_tasks,
+        "has_dmn": bool(definition.source_dmn_xml),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Identity
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/accounts")
+def accounts() -> list[dict[str, Any]]:
+    return [
+        {
+            "company_id": tenant_id,
+            "company": company,
+            "username": username,
+            "name": name,
+            "title": title,
+            "role": role,
+            "initials": "".join(part[0] for part in name.split()[:2]).upper(),
+        }
+        for tenant_id, company in TENANTS.items()
+        for username, (name, title, role) in USERS.items()
+    ]
+
+
+@app.get("/me")
+def me(caller: Caller = CallerDep, session: Session = SessionDep) -> dict[str, Any]:
+    directory = people(session, caller.tenant_id)
+    person = directory[caller.user_id]
+    name, title, role = USERS[caller.username]
+    open_tasks = api.execute_query(
+        session,
+        api.GetPendingTasksQuery(tenant_id=caller.tenant_id, user_id=caller.user_id),
+    )
+    return {
+        "name": person.display_name or name,
+        "username": caller.username,
+        "title": title,
+        "role": role,
+        "company": TENANTS[caller.tenant_id],
+        "company_id": caller.tenant_id,
+        "can_publish": role == "admin",
+        "can_operate": role == "admin",
+        "open_tasks": len(open_tasks),
+        "people": [
+            {"username": key, "name": value[0]} for key, value in USERS.items()
+        ],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Flows
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/operations")
+def operations(caller: Caller = CallerDep) -> list[dict[str, str]]:
+    """The service-task operations a diagram may call here."""
+    return available_operations()
+
+
+@app.post("/inspect")
+def inspect_bpmn(
+    body: InspectIn, caller: Caller = CallerDep
+) -> dict[str, Any]:
+    """Read a diagram without publishing it, so the designer can check it first."""
+    flow = bpmn_inspect.inspect(body.bpmn)
+    known = {operation["operation_id"] for operation in available_operations()}
+    return {
+        "process_id": flow.process_id,
+        "name": flow.name,
+        "lanes": list(flow.lanes),
+        "steps": [
+            {
+                "name": task.name,
+                "lane": task.lane,
+                "form_schema": task.form_schema,
+            }
+            for task in flow.user_tasks
+        ],
+        "decisions": list(flow.decisions),
+        "service_operations": list(flow.service_operations),
+        "unknown_operations": sorted(set(flow.service_operations) - known),
+        "timers": list(flow.timers),
+        "gateways": sorted(set(flow.gateways)),
+        "script_tasks": flow.script_tasks,
+        "form_files": list(flow.form_files),
+        "problems": list(flow.errors),
+        "people": list(USERS),
+    }
+
+
+@app.post("/flows", status_code=201)
+def publish_flow(
+    body: PublishIn,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Publish a flow. The library refuses this unless the caller is an admin."""
+    definition, _flow = publish(
+        session,
+        tenant_id=caller.tenant_id,
+        actor_user_id=caller.user_id,
+        body=body,
+    )
+    session.flush()
+    return flow_summary(definition)
+
+
+@app.get("/flows")
+def list_flows(
+    caller: Caller = CallerDep, session: Session = SessionDep
+) -> list[dict[str, Any]]:
+    """Every flow anybody may start, newest version of each."""
+    seen: dict[str, dict[str, Any]] = {}
+    for definition in definitions_for(session, caller.tenant_id):
+        if definition.bpmn_identifier in seen:
+            seen[definition.bpmn_identifier]["versions"] += 1
+            continue
+        summary = flow_summary(definition)
+        summary["versions"] = 1
+        seen[definition.bpmn_identifier] = summary
+    return sorted(seen.values(), key=lambda row: row["name"].lower())
+
+
+@app.get("/flows/{process_id}")
+def get_flow(
+    process_id: str,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    definition = newest_definition(session, caller.tenant_id, process_id)
+    summary = flow_summary(definition)
+    summary["versions"] = [
+        {"version_id": row.id, "published_at": row.created_at_in_seconds}
+        for row in definitions_for(session, caller.tenant_id, process_id)
+    ]
+    summary["files"] = [
+        {"filename": item.filename, "kind": item.kind, "bytes": len(item.content)}
+        for item in store.assets_for(session, caller.tenant_id, process_id)
+    ]
+    return summary
+
+
+@app.get("/flows/{process_id}/diagram")
+def get_diagram(
+    process_id: str,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, str]:
+    definition = newest_definition(session, caller.tenant_id, process_id)
+    return {"bpmn": definition.source_bpmn_xml or ""}
+
+
+@app.post("/flows/{process_id}/start", status_code=201)
+def start_flow(
+    process_id: str,
+    body: StartIn | None = None,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Start an instance of a published flow."""
+    definition = newest_definition(session, caller.tenant_id, process_id)
+    summary = (body.summary if body else None) or (
+        (definition.properties_json or {}).get("display_name")
+        or definition.bpmn_name
+        or process_id
+    )
+    with service_tasks(session, caller.tenant_id):
+        instance = api.execute_command(
+            session,
+            api.InitializeProcessInstanceFromDefinitionCommand(
+                tenant_id=caller.tenant_id,
+                bpmn_process_definition_id=definition.id,
+                process_initiator_id=caller.user_id,
+                summary=summary[:255],
+                process_version=1,
+                started_at_in_seconds=now(),
+                bpmn_process_id=process_id,
+            ),
+        )
+    session.flush()
+    return {
+        "id": instance.id,
+        "status": str(instance.status),
+        "process_id": process_id,
+        "summary": instance.summary,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Instances
+# --------------------------------------------------------------------------- #
+
+
+def instance_row(
+    instance: Any, directory: dict[int, UserModel], pending: dict[int, list[Any]]
+) -> dict[str, Any]:
+    waiting = pending.get(instance.id, [])
+    return {
+        "id": instance.id,
+        "process_id": instance.process_model_identifier,
+        "summary": instance.summary,
+        "status": str(instance.status),
+        "started_by": display_name(directory, instance.process_initiator_id),
+        "waiting_on": sorted(
+            {task.lane_name or task.task_title or task.task_name for task in waiting}
+        ),
+        "open_steps": len(waiting),
+    }
+
+
+@app.get("/instances")
+def list_instances(
+    scope: str = "all",
+    status: str | None = None,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> list[dict[str, Any]]:
+    instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=caller.tenant_id, status=status),
+    )
+    if scope == "mine":
+        instances = [
+            row for row in instances if row.process_initiator_id == caller.user_id
+        ]
+    directory = people(session, caller.tenant_id)
+    pending: dict[int, list[Any]] = {}
+    for task in api.execute_query(
+        session, api.GetPendingTasksQuery(tenant_id=caller.tenant_id)
+    ):
+        pending.setdefault(task.process_instance_id, []).append(task)
+    rows = [instance_row(row, directory, pending) for row in instances]
+    return sorted(rows, key=lambda row: row["id"], reverse=True)
+
+
+@app.get("/instances/{instance_id}")
+def get_instance(
+    instance_id: int,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    instance = api.execute_query(
+        session,
+        api.GetProcessInstanceQuery(
+            tenant_id=caller.tenant_id, process_instance_id=instance_id
+        ),
+    )
+    directory = people(session, caller.tenant_id)
+    pending: dict[int, list[Any]] = {}
+    for task in api.execute_query(
+        session, api.GetPendingTasksQuery(tenant_id=caller.tenant_id)
+    ):
+        pending.setdefault(task.process_instance_id, []).append(task)
+
+    row = instance_row(instance, directory, pending)
+    row["data"] = {
+        item.key: item.value
+        for item in api.execute_query(
+            session,
+            api.GetProcessInstanceMetadataQuery(
+                tenant_id=caller.tenant_id, process_instance_id=instance_id
+            ),
+        )
+    }
+    row["events"] = [
+        {
+            "event": str(event.event_type),
+            "by": display_name(directory, event.user_id),
+            "at": time.strftime(
+                "%d %b %Y, %H:%M:%S", time.localtime(float(event.timestamp))
+            ),
+        }
+        for event in api.execute_query(
+            session,
+            api.GetProcessInstanceEventsQuery(
+                tenant_id=caller.tenant_id, process_instance_id=instance_id
+            ),
+        )
+    ]
+    row["steps"] = [
+        {
+            "id": task.id,
+            "name": task.task_title or task.task_name,
+            "lane": task.lane_name,
+            "done": bool(task.completed),
+            "by": display_name(directory, task.completed_by_user_id),
+            "claimed_by": display_name(directory, task.actual_owner_id),
+        }
+        for task in session.scalars(
+            select(HumanTaskModel)
+            .where(
+                HumanTaskModel.m8f_tenant_id == caller.tenant_id,
+                HumanTaskModel.process_instance_id == instance_id,
+            )
+            .order_by(HumanTaskModel.id)
+        )
+    ]
+    row["activity"] = [
+        {
+            "operation_id": call.operation_id,
+            "outcome": call.outcome,
+            "detail": call.detail,
+            "at": time.strftime(
+                "%d %b %Y, %H:%M:%S", time.localtime(call.created_at_in_seconds)
+            ),
+        }
+        for call in session.scalars(
+            select(store.ConnectorCall)
+            .where(
+                store.ConnectorCall.tenant_id == caller.tenant_id,
+                store.ConnectorCall.process_instance_id == instance_id,
+            )
+            .order_by(store.ConnectorCall.id)
+        )
+    ]
+    return row
+
+
+LIFECYCLE = {
+    "hold": api.SuspendProcessInstanceCommand,
+    "release": api.ResumeProcessInstanceCommand,
+    "cancel": api.TerminateProcessInstanceCommand,
+    "retry": api.RetryProcessInstanceCommand,
+}
+
+
+@app.post("/instances/{instance_id}/{action}")
+def lifecycle(
+    instance_id: int,
+    action: str,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """hold / release / cancel / retry. All admin-only in the library's V1 RBAC."""
+    command_type = LIFECYCLE.get(action)
+    if command_type is None:
+        raise NotFoundError(f"There is no '{action}' action")
+    with service_tasks(session, caller.tenant_id):
+        instance = api.execute_command(
+            session,
+            command_type(
+                tenant_id=caller.tenant_id,
+                process_instance_id=instance_id,
+                user_id=caller.user_id,
+            ),
+        )
+    return {"id": instance.id, "status": str(instance.status)}
+
+
+@app.post("/instances/{instance_id}/schedule-retry")
+def schedule_retry(
+    instance_id: int,
+    body: ScheduleRetryIn,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Ask the scheduler to retry an errored instance later."""
+    instance = api.execute_command(
+        session,
+        api.ScheduleProcessInstanceRetryCommand(
+            tenant_id=caller.tenant_id,
+            process_instance_id=instance_id,
+            user_id=caller.user_id,
+            retry_at_in_seconds=now() + body.in_seconds,
+        ),
+    )
+    return {
+        "id": instance.id,
+        "status": str(instance.status),
+        "retry_in_seconds": body.in_seconds,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Tasks
+# --------------------------------------------------------------------------- #
+
+
+def form_for(
+    session: Session, tenant_id: str, process_id: str, task_name: str
+) -> dict[str, Any] | None:
+    """The JSON Schema a task wants, if the diagram named one and it was supplied.
+
+    The library records a `form_file_name` column but never fills it in, so the
+    reference is read out of the stored diagram instead.
+    """
+    definition = newest_definition(session, tenant_id, process_id)
+    flow = bpmn_inspect.inspect(definition.source_bpmn_xml or "")
+    wanted = next(
+        (
+            task.form_schema
+            for task in flow.user_tasks
+            if task.element_id == task_name or task.name == task_name
+        ),
+        None,
+    )
+    if not wanted:
+        return None
+    found = store.asset(session, tenant_id, process_id, wanted)
+    if found is None:
+        return None
+    try:
+        return json.loads(found.content)
+    except ValueError:  # pragma: no cover - stored by us as JSON
+        return None
+
+
+@app.get("/tasks")
+def list_tasks(
+    mine: bool = True,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> list[dict[str, Any]]:
+    """Your worklist, or everything open in the company."""
+    tasks = api.execute_query(
+        session,
+        api.GetPendingTasksQuery(
+            tenant_id=caller.tenant_id,
+            user_id=caller.user_id if mine else None,
+        ),
+    )
+    directory = people(session, caller.tenant_id)
+    out: list[dict[str, Any]] = []
+    for task in tasks:
+        instance = api.execute_query(
+            session,
+            api.GetProcessInstanceQuery(
+                tenant_id=caller.tenant_id,
+                process_instance_id=task.process_instance_id,
+            ),
+        )
+        out.append(
+            {
+                "id": task.id,
+                "name": task.task_title or task.task_name,
+                "lane": task.lane_name,
+                "instance_id": task.process_instance_id,
+                "process_id": instance.process_model_identifier,
+                "flow": task.process_model_display_name,
+                "summary": instance.summary,
+                "claimed_by": display_name(directory, task.actual_owner_id),
+            }
+        )
+    return out
+
+
+@app.get("/tasks/{task_id}")
+def get_task(
+    task_id: int,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """One task, with its form and whatever the flow already knows."""
+    task = session.get(HumanTaskModel, task_id)
+    if task is None or task.m8f_tenant_id != caller.tenant_id:
+        raise NotFoundError(f"There is no task {task_id}")
+
+    instance = api.execute_query(
+        session,
+        api.GetProcessInstanceQuery(
+            tenant_id=caller.tenant_id, process_instance_id=task.process_instance_id
+        ),
+    )
+    directory = people(session, caller.tenant_id)
+    data = {
+        item.key: item.value
+        for item in api.execute_query(
+            session,
+            api.GetProcessInstanceMetadataQuery(
+                tenant_id=caller.tenant_id,
+                process_instance_id=task.process_instance_id,
+            ),
+        )
+    }
+    return {
+        "id": task.id,
+        "name": task.task_title or task.task_name,
+        "element_id": task.task_name,
+        "lane": task.lane_name,
+        "instance_id": task.process_instance_id,
+        "process_id": instance.process_model_identifier,
+        "summary": instance.summary,
+        "claimed_by": display_name(directory, task.actual_owner_id),
+        "completed": bool(task.completed),
+        "form": form_for(
+            session,
+            caller.tenant_id,
+            instance.process_model_identifier,
+            task.task_name,
+        ),
+        "known_data": data,
+    }
+
+
+@app.post("/tasks/{task_id}/claim")
+def claim_task(
+    task_id: int,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    task = api.execute_command(
+        session,
+        api.ClaimTaskCommand(
+            tenant_id=caller.tenant_id, human_task_id=task_id, user_id=caller.user_id
+        ),
+    )
+    return {"id": task.id, "claimed_by": caller.username}
+
+
+@app.post("/tasks/{task_id}/complete")
+def complete_task(
+    task_id: int,
+    body: CompleteIn,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Submit a task's form.
+
+    Claiming first is the engine's bookkeeping, not something a person should
+    have to do twice, so it happens here.
+    """
+    with contextlib.suppress(Exception):
+        api.execute_command(
+            session,
+            api.ClaimTaskCommand(
+                tenant_id=caller.tenant_id,
+                human_task_id=task_id,
+                user_id=caller.user_id,
+            ),
+        )
+    with service_tasks(session, caller.tenant_id):
+        task = api.execute_command(
+            session,
+            api.CompleteTaskCommand(
+                tenant_id=caller.tenant_id,
+                human_task_id=task_id,
+                user_id=caller.user_id,
+                completed_at_in_seconds=now(),
+                task_payload=body.payload,
+            ),
+        )
+    instance = api.execute_query(
+        session,
+        api.GetProcessInstanceQuery(
+            tenant_id=caller.tenant_id, process_instance_id=task.process_instance_id
+        ),
+    )
+    return {
+        "id": task.id,
+        "instance_id": task.process_instance_id,
+        "instance_status": str(instance.status),
+    }
+
+
+@app.get("/activity")
+def activity(
+    caller: Caller = CallerDep, session: Session = SessionDep
+) -> list[dict[str, Any]]:
+    """Everything the connectors did, newest first."""
+    return [
+        {
+            "id": call.id,
+            "instance_id": call.process_instance_id,
+            "operation_id": call.operation_id,
+            "parameters": call.parameters,
+            "outcome": call.outcome,
+            "detail": call.detail,
+            "at": time.strftime(
+                "%d %b %Y, %H:%M:%S", time.localtime(call.created_at_in_seconds)
+            ),
+        }
+        for call in session.scalars(
+            select(store.ConnectorCall)
+            .where(store.ConnectorCall.tenant_id == caller.tenant_id)
+            .order_by(store.ConnectorCall.id.desc())
+        )
+    ]
+
+
+def run() -> None:
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8020)

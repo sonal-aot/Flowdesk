@@ -1,0 +1,39 @@
+{
+  "report-incident.json": {
+    "title": "Report an incident",
+    "type": "object",
+    "required": ["title", "severity"],
+    "properties": {
+      "title": { "type": "string", "title": "What happened?" },
+      "severity": {
+        "type": "string",
+        "title": "Severity",
+        "enum": ["sev1", "sev2", "sev3"],
+        "default": "sev2"
+      },
+      "affects_customers": { "type": "boolean", "title": "Customers affected" }
+    }
+  },
+  "triage.json": {
+    "title": "Technical triage",
+    "type": "object",
+    "required": ["root_cause"],
+    "properties": {
+      "root_cause": { "type": "string", "title": "Root cause so far" },
+      "mitigated": { "type": "boolean", "title": "Mitigated" }
+    }
+  },
+  "comms.json": {
+    "title": "Customer communication",
+    "type": "object",
+    "required": ["channel"],
+    "properties": {
+      "channel": {
+        "type": "string",
+        "title": "Where did you tell customers?",
+        "enum": ["status page", "email", "in-app", "nowhere yet"]
+      },
+      "message": { "type": "string", "title": "What you told them" }
+    }
+  }
+}

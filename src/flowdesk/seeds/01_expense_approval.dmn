@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+  id="Definitions_expense_route" name="Expense Route"
+  namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="expense_route" name="Expense Route">
+    <decisionTable id="DecisionTable_expense_route">
+      <input id="Input_amount">
+        <inputExpression id="InputExpression_amount" typeRef="integer" expressionLanguage="python">
+          <text>amount</text>
+        </inputExpression>
+      </input>
+      <output id="Output_needs_approval" name="needs_approval" typeRef="boolean" />
+      <rule id="Rule_within">
+        <description>100 or less is approved by policy</description>
+        <inputEntry id="In_within"><text>&lt;= 100</text></inputEntry>
+        <outputEntry id="Out_within"><text>False</text></outputEntry>
+      </rule>
+      <rule id="Rule_over">
+        <description>Over 100 needs an approver</description>
+        <inputEntry id="In_over"><text>&gt; 100</text></inputEntry>
+        <outputEntry id="Out_over"><text>True</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+</definitions>

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
+  id="Definitions_access" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collaboration_access">
+    <bpmn:participant id="Participant_access" name="Access Request" processRef="Process_access_request" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_access_request" name="Access Request" isExecutable="true">
+    <bpmn:laneSet id="LaneSet_access">
+      <bpmn:lane id="Lane_requester" name="Requester">
+        <bpmn:flowNodeRef>start</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_request</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_record</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_granted</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_owner" name="System Owner">
+        <bpmn:flowNodeRef>task_review</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>timeout</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_security" name="Security">
+        <bpmn:flowNodeRef>task_security</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_escalated</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+
+    <bpmn:startEvent id="start" name="Access needed">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="task_request" name="Request Access">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="request-access.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:userTask id="task_review" name="System Owner Review">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="owner-review.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:boundaryEvent id="timeout" name="No reply in time" attachedToRef="task_review" cancelActivity="true">
+      <bpmn:outgoing>f_escalate</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">'PT10M'</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:userTask id="task_security" name="Security Decides Instead">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="owner-review.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_escalate</bpmn:incoming>
+      <bpmn:outgoing>f_escalated_end</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:serviceTask id="task_record" name="Record The Grant">
+      <bpmn:extensionElements>
+        <spiffworkflow:serviceTaskOperator id="log/Write">
+          <spiffworkflow:parameters>
+            <spiffworkflow:parameter id="system" type="any" value="system" />
+            <spiffworkflow:parameter id="level" type="any" value="access_level" />
+            <spiffworkflow:parameter id="verdict" type="any" value="verdict" />
+          </spiffworkflow:parameters>
+        </spiffworkflow:serviceTaskOperator>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end_granted" name="Decided by owner">
+      <bpmn:incoming>f4</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="end_escalated" name="Decided by security">
+      <bpmn:incoming>f_escalated_end</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="task_request" />
+    <bpmn:sequenceFlow id="f2" sourceRef="task_request" targetRef="task_review" />
+    <bpmn:sequenceFlow id="f3" sourceRef="task_review" targetRef="task_record" />
+    <bpmn:sequenceFlow id="f4" sourceRef="task_record" targetRef="end_granted" />
+    <bpmn:sequenceFlow id="f_escalate" sourceRef="timeout" targetRef="task_security" />
+    <bpmn:sequenceFlow id="f_escalated_end" sourceRef="task_security" targetRef="end_escalated" />
+  </bpmn:process>
+</bpmn:definitions>
