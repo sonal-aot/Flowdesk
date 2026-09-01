@@ -87,20 +87,28 @@ export interface InstanceRow {
   status: string
   started_by: string | null
   waiting_on: string[]
+  waiting_step: string
+  waiting_people: string[]
   open_steps: number
+}
+
+export type StepState = 'done' | 'waiting' | 'upcoming' | 'not_needed'
+
+export interface ProgressStep {
+  name: string
+  lane: string | null
+  state: StepState
+  task_id: number | null
+  by: string | null
+  at: string | null
+  people: { name: string; why: string }[]
 }
 
 export interface InstanceDetail extends InstanceRow {
   data: Record<string, string>
   events: { event: string; by: string | null; at: string }[]
-  steps: {
-    id: number
-    name: string
-    lane: string | null
-    done: boolean
-    by: string | null
-    claimed_by: string | null
-  }[]
+  progress: ProgressStep[]
+  next_action: string
   activity: { operation_id: string; outcome: string; detail: string; at: string }[]
 }
 

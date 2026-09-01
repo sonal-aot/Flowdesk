@@ -156,7 +156,12 @@ def test_expense_within_policy_skips_the_approver(client):
     # The decision table routed past the approver and the script task decided.
     assert result["instance_status"] == "complete"
     detail = instance(client, instance_id)
-    assert [step["name"] for step in detail["steps"]] == ["Submit Expense Claim"]
+    assert [step["name"] for step in detail["progress"]] == [
+        "Submit Expense Claim",
+        "Approve Expense Claim",
+    ]
+    # The approver step was never needed: the decision table routed past it.
+    assert [step["state"] for step in detail["progress"]] == ["done", "not_needed"]
     assert detail["activity"][0]["outcome"] == "ok"
 
 
@@ -601,8 +606,69 @@ def test_one_person_fills_a_form_then_another_decides(client):
 
         detail = instance(client, instance_id)
         assert detail["data"]["decision"] == verdict
-        assert [step["name"] for step in detail["steps"]] == [
+        assert [step["name"] for step in detail["progress"]] == [
             "Submit Request",
             "Review Request",
         ]
-        assert all(step["done"] for step in detail["steps"])
+        assert all(step["state"] == "done" for step in detail["progress"])
+
+
+def test_a_run_shows_its_whole_shape_and_who_is_next(client):
+    """The detail view answers "where is this and who owes the next move"."""
+    publish_fixture(client, "two_step_request")
+    instance_id = start(client, "Process_two_step_request")
+
+    detail = instance(client, instance_id)
+    # Both steps are listed, including the one nobody has reached yet.
+    assert [(s["name"], s["state"]) for s in detail["progress"]] == [
+        ("Submit Request", "waiting"),
+        ("Review Request", "upcoming"),
+    ]
+    # And the waiting step names the actual person, with why they have it.
+    first = detail["progress"][0]
+    assert [p["name"] for p in first["people"]] == ["Sam Submitter"]
+    assert first["people"][0]["why"] == "owns this lane"
+    assert detail["next_action"] == "Waiting on Submit Request — Sam Submitter"
+
+    submit_task = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submit_task["id"], {"subject": "Chair", "details": "Broken"})
+
+    detail = instance(client, instance_id)
+    assert [(s["name"], s["state"]) for s in detail["progress"]] == [
+        ("Submit Request", "done"),
+        ("Review Request", "waiting"),
+    ]
+    assert detail["progress"][0]["by"] == "Sam Submitter"
+    assert detail["progress"][0]["at"]
+    assert detail["next_action"] == "Waiting on Review Request — Riya Reviewer"
+
+    # The list view carries the same answer without opening anything.
+    listed = next(
+        row
+        for row in client.get("/instances", headers=h(ADMIN)).json()
+        if row["id"] == instance_id
+    )
+    assert listed["waiting_step"] == "Review Request"
+    assert listed["waiting_people"] == ["Riya Reviewer"]
+
+    review = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
+    complete(client, review["id"], {"decision": "approved"}, REVIEWER)
+    assert instance(client, instance_id)["next_action"] == "Finished."
+
+
+def test_a_parallel_run_names_both_people_waiting(client):
+    publish_fixture(client, "incident_response")
+    instance_id = start(client, "Process_incident_response")
+    report = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, report["id"], {"title": "Outage", "severity": "sev1"})
+
+    detail = instance(client, instance_id)
+    waiting = [s for s in detail["progress"] if s["state"] == "waiting"]
+    assert sorted(s["name"] for s in waiting) == [
+        "Customer Communication",
+        "Technical Triage",
+    ]
+    assert "Riya Reviewer" in detail["next_action"]
+    assert "Erin Editor" in detail["next_action"]

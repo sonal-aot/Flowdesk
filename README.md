@@ -135,10 +135,32 @@ set to something private in anything resembling a real deployment.
 |---|---|
 | **Flows** | Every published flow, with what is inside it — steps and lanes, decision tables, gateways, timers, service operations — and a Start button |
 | **My work** | Your open tasks. Opening one renders its form from the JSON Schema the diagram asked for, or a free-form editor if it named none |
-| **Runs** | Every instance, filterable by status. The detail panel shows steps, collected data, service-task calls and the full event log, plus hold / release / retry / cancel for operators |
+| **Runs** | Every instance, filterable by status. Click a row for the detail panel — see below |
 | **Publish** | Designers only: upload a diagram, see what the console found in it, assign lane owners, supply form schemas, publish |
 | **Activity** | Every connector call the workspace's flows have made |
 | **Profile** | Your own name, email and password (user menu, top-right) |
+
+### Following a run
+
+The **Runs** list names the step and the person each run is waiting on, without
+opening anything. Click any row for the detail panel, which shows:
+
+- **Next action** — one line: *"Waiting on Review Request — Riya Reviewer"*
+- **The flow** — every step of the diagram in order, marked done / waiting now /
+  still to come, with who did each one and when, and for the waiting step the
+  actual people who can act on it and why they have it
+- Data collected so far, service-task calls, the full engine event log, and hold
+  / release / retry / cancel for operators
+
+Steps a run never reached are shown as *not needed — the run went another way*,
+so a flow that skipped its approver reads correctly rather than looking stuck.
+
+**What comes from where.** Who owes the next move is the library's own data:
+`human_task_user` records exactly which people may act on an open task and why
+(`lane_owner`, `process_initiator`, and so on). The steps a run has *not reached
+yet* exist nowhere in the database — the engine only materialises a task when
+control arrives at it — so the console reads the shape out of the stored diagram
+and matches it against the tasks that exist. That is the one gap the app fills.
 
 The shell follows m8flow's: MUI, a collapsible icon rail, a light/dark switch and
 the company shown in the header — all persisted in localStorage. Task forms use
@@ -254,7 +276,7 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ## Tests
 
 ```bash
-uv run pytest                    # 48 tests
+uv run pytest                    # 50 tests
 cd frontend && npm run build     # type-check and production build
 ```
 

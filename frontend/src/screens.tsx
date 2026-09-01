@@ -23,7 +23,11 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import CloseIcon from '@mui/icons-material/Close'
+import HourglassTopIcon from '@mui/icons-material/HourglassTop'
+import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
+import DoNotDisturbAltIcon from '@mui/icons-material/DoNotDisturbAlt'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import {
@@ -34,6 +38,7 @@ import {
   type InstanceDetail,
   type InstanceRow,
   type Me,
+  type ProgressStep,
   type TaskDetail,
   type TaskRow,
 } from './api'
@@ -526,31 +531,26 @@ export function Runs({
                 {open.summary}
               </Typography>
 
-              <Section title="Steps">
-                <Table size="small">
-                  <TableBody>
-                    {open.steps.map((step) => (
-                      <TableRow key={step.id}>
-                        <TableCell>
-                          {step.name}
-                          {step.lane && (
-                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                              {step.lane}
-                            </Typography>
-                          )}
-                        </TableCell>
-                        <TableCell align="right">
-                          <Chip
-                            size="small"
-                            label={step.done ? `done · ${step.by}` : 'open'}
-                            color={step.done ? 'success' : 'info'}
-                            variant={step.done ? 'filled' : 'outlined'}
-                          />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <Paper
+                variant="outlined"
+                sx={{ mt: 2, p: 1.5, bgcolor: 'background.default' }}
+              >
+                <Typography variant="overline" sx={{ color: 'text.secondary' }}>
+                  Next action
+                </Typography>
+                <Typography variant="body2">{open.next_action}</Typography>
+              </Paper>
+
+              <Section title="The flow">
+                <Stack spacing={0}>
+                  {open.progress.map((step, index) => (
+                    <StepLine
+                      key={index}
+                      step={step}
+                      last={index === open.progress.length - 1}
+                    />
+                  ))}
+                </Stack>
               </Section>
 
               {Object.keys(open.data).length > 0 && (
@@ -630,6 +630,90 @@ export function Runs({
         </Box>
       </Drawer>
     </>
+  )
+}
+
+const STEP_LOOK: Record<
+  ProgressStep['state'],
+  { icon: React.ReactNode; color: string; note: string }
+> = {
+  done: {
+    icon: <CheckCircleIcon fontSize="small" color="success" />,
+    color: 'success.main',
+    note: 'done',
+  },
+  waiting: {
+    icon: <HourglassTopIcon fontSize="small" color="info" />,
+    color: 'info.main',
+    note: 'waiting now',
+  },
+  upcoming: {
+    icon: <RadioButtonUncheckedIcon fontSize="small" sx={{ color: 'text.disabled' }} />,
+    color: 'text.disabled',
+    note: 'still to come',
+  },
+  not_needed: {
+    icon: <DoNotDisturbAltIcon fontSize="small" sx={{ color: 'text.disabled' }} />,
+    color: 'text.disabled',
+    note: 'not needed — the run went another way',
+  },
+}
+
+/** One step of the flow: where it is, who did it or who owes it. */
+function StepLine({ step, last }: { step: ProgressStep; last: boolean }) {
+  const look = STEP_LOOK[step.state]
+  const dim = step.state === 'upcoming' || step.state === 'not_needed'
+  return (
+    <Stack direction="row" spacing={1.5} sx={{ alignItems: 'flex-start' }}>
+      <Stack sx={{ alignItems: 'center', pt: 0.25 }}>
+        {look.icon}
+        {!last && (
+          <Box
+            sx={{
+              width: '2px',
+              flexGrow: 1,
+              minHeight: 22,
+              bgcolor: 'divider',
+              my: 0.25,
+            }}
+          />
+        )}
+      </Stack>
+      <Box sx={{ pb: last ? 0 : 1.5, minWidth: 0 }}>
+        <Typography
+          variant="body2"
+          sx={{ fontWeight: step.state === 'waiting' ? 600 : 500, color: dim ? 'text.secondary' : 'text.primary' }}
+        >
+          {step.name}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+          {step.lane ? `${step.lane} · ` : ''}
+          {step.state === 'done'
+            ? `done by ${step.by}${step.at ? ` · ${step.at}` : ''}`
+            : look.note}
+        </Typography>
+        {step.state === 'waiting' && (
+          <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap' }} useFlexGap>
+            {step.people.length > 0 ? (
+              step.people.map((person: { name: string; why: string }) => (
+                <Chip
+                  key={person.name}
+                  size="small"
+                  color="info"
+                  variant="outlined"
+                  label={person.name}
+                  title={person.why}
+                />
+              ))
+            ) : (
+              <Typography variant="caption" sx={{ color: 'warning.main' }}>
+                Nobody is assigned to this step
+              </Typography>
+            )}
+          </Stack>
+        )}
+      </Box>
+    </Stack>
   )
 }
 

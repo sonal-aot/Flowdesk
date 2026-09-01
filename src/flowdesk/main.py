@@ -29,6 +29,7 @@ from m8flow_bpmn_core.models.bpmn_process_definition import (
     BpmnProcessDefinitionModel,
 )
 from m8flow_bpmn_core.models.human_task import HumanTaskModel
+from m8flow_bpmn_core.models.human_task_user import HumanTaskUserModel
 from m8flow_bpmn_core.models.user import UserModel
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -623,7 +624,10 @@ def start_flow(
 
 
 def instance_row(
-    instance: Any, directory: dict[int, UserModel], pending: dict[int, list[Any]]
+    instance: Any,
+    directory: dict[int, UserModel],
+    pending: dict[int, list[Any]],
+    assignees: dict[int, list[str]] | None = None,
 ) -> dict[str, Any]:
     waiting = pending.get(instance.id, [])
     return {
@@ -635,8 +639,34 @@ def instance_row(
         "waiting_on": sorted(
             {task.lane_name or task.task_title or task.task_name for task in waiting}
         ),
+        "waiting_step": ", ".join(
+            sorted({task.task_title or task.task_name for task in waiting})
+        ),
+        "waiting_people": sorted(
+            {
+                name
+                for task in waiting
+                for name in (assignees or {}).get(task.id, [])
+            }
+        ),
         "open_steps": len(waiting),
     }
+
+
+def assignees_by_task(
+    session: Session, tenant_id: str, directory: dict[int, UserModel]
+) -> dict[int, list[str]]:
+    """human task id -> the people who may act on it, from `human_task_user`."""
+    out: dict[int, list[str]] = {}
+    for assignment in session.scalars(
+        select(HumanTaskUserModel).where(
+            HumanTaskUserModel.m8f_tenant_id == tenant_id
+        )
+    ):
+        name = display_name(directory, assignment.user_id)
+        if name is not None:
+            out.setdefault(assignment.human_task_id, []).append(name)
+    return out
 
 
 @app.get("/instances")
@@ -660,7 +690,8 @@ def list_instances(
         session, api.GetPendingTasksQuery(tenant_id=caller.tenant_id)
     ):
         pending.setdefault(task.process_instance_id, []).append(task)
-    rows = [instance_row(row, directory, pending) for row in instances]
+    assignees = assignees_by_task(session, caller.tenant_id, directory)
+    rows = [instance_row(row, directory, pending, assignees) for row in instances]
     return sorted(rows, key=lambda row: row["id"], reverse=True)
 
 
@@ -683,7 +714,12 @@ def get_instance(
     ):
         pending.setdefault(task.process_instance_id, []).append(task)
 
-    row = instance_row(instance, directory, pending)
+    row = instance_row(
+        instance,
+        directory,
+        pending,
+        assignees_by_task(session, caller.tenant_id, directory),
+    )
     row["data"] = {
         item.key: item.value
         for item in api.execute_query(
@@ -708,24 +744,13 @@ def get_instance(
             ),
         )
     ]
-    row["steps"] = [
-        {
-            "id": task.id,
-            "name": task.task_title or task.task_name,
-            "lane": task.lane_name,
-            "done": bool(task.completed),
-            "by": display_name(directory, task.completed_by_user_id),
-            "claimed_by": display_name(directory, task.actual_owner_id),
-        }
-        for task in session.scalars(
-            select(HumanTaskModel)
-            .where(
-                HumanTaskModel.m8f_tenant_id == caller.tenant_id,
-                HumanTaskModel.process_instance_id == instance_id,
-            )
-            .order_by(HumanTaskModel.id)
-        )
-    ]
+    row["progress"] = progress_for(
+        session,
+        tenant_id=caller.tenant_id,
+        instance=instance,
+        directory=directory,
+    )
+    row["next_action"] = next_action_line(row["progress"], str(instance.status))
     row["activity"] = [
         {
             "operation_id": call.operation_id,
@@ -745,6 +770,121 @@ def get_instance(
         )
     ]
     return row
+
+
+WHY_ASSIGNED = {
+    "lane_owner": "owns this lane",
+    "lane_assignment": "assigned to this lane",
+    "process_initiator": "started the run",
+    "manual": "added by hand",
+    "guest": "guest access",
+}
+
+
+def progress_for(
+    session: Session,
+    *,
+    tenant_id: str,
+    instance: Any,
+    directory: dict[int, UserModel],
+) -> list[dict[str, Any]]:
+    """Every step of the flow, in order, with where the run has got to.
+
+    The library only knows about steps it has already created -- a step the run
+    has not reached yet has no row anywhere. So the shape comes from the stored
+    diagram and is matched against the human tasks that exist:
+
+    * matched and completed  -> done, by whom, when
+    * matched and open       -> waiting, on exactly these people
+    * unmatched              -> still to come, or never needed if the run has
+                                already finished down another branch
+    """
+    definition = newest_definition(session, tenant_id, instance.process_model_identifier)
+    flow = bpmn_inspect.inspect(definition.source_bpmn_xml or "")
+
+    rows = list(
+        session.scalars(
+            select(HumanTaskModel)
+            .where(
+                HumanTaskModel.m8f_tenant_id == tenant_id,
+                HumanTaskModel.process_instance_id == instance.id,
+            )
+            .order_by(HumanTaskModel.id)
+        )
+    )
+    by_element: dict[str, HumanTaskModel] = {}
+    for row in rows:
+        by_element[row.task_name] = row  # the latest wins if a step repeats
+
+    finished = str(instance.status) in {"complete", "terminated"}
+    out: list[dict[str, Any]] = []
+
+    for step in flow.user_tasks:
+        task = by_element.get(step.element_id)
+        entry: dict[str, Any] = {
+            "name": step.name,
+            "lane": step.lane,
+            "task_id": task.id if task is not None else None,
+            "by": None,
+            "at": None,
+            "people": [],
+        }
+        if task is None:
+            entry["state"] = "not_needed" if finished else "upcoming"
+            out.append(entry)
+            continue
+
+        when = task.updated_at_in_seconds or task.created_at_in_seconds
+        entry["at"] = (
+            time.strftime("%d %b %Y, %H:%M", time.localtime(when)) if when else None
+        )
+        if task.completed:
+            entry["state"] = "done"
+            entry["by"] = display_name(directory, task.completed_by_user_id)
+        else:
+            entry["state"] = "waiting"
+            entry["people"] = [
+                {
+                    "name": display_name(directory, assignment.user_id)
+                    or str(assignment.user_id),
+                    "why": WHY_ASSIGNED.get(
+                        assignment.added_by or "", assignment.added_by or ""
+                    ),
+                }
+                for assignment in session.scalars(
+                    select(HumanTaskUserModel)
+                    .where(
+                        HumanTaskUserModel.m8f_tenant_id == tenant_id,
+                        HumanTaskUserModel.human_task_id == task.id,
+                    )
+                    .order_by(HumanTaskUserModel.id)
+                )
+                if assignment.user_id in directory
+            ]
+        out.append(entry)
+    return out
+
+
+def next_action_line(progress: list[dict[str, Any]], status: str) -> str:
+    """One sentence for the top of the screen."""
+    waiting = [step for step in progress if step["state"] == "waiting"]
+    if not waiting:
+        return {
+            "complete": "Finished.",
+            "terminated": "Cancelled.",
+            "suspended": "On hold — nobody can act until it is released.",
+            "error": "Stopped with an error.",
+        }.get(status, "Nothing is waiting on a person.")
+
+    parts = []
+    for step in waiting:
+        people = ", ".join(person["name"] for person in step["people"]) or (
+            f"anyone in {step['lane']}" if step["lane"] else "anyone"
+        )
+        parts.append(f"{step['name']} — {people}")
+    if len(parts) == 1:
+        return f"Waiting on {parts[0]}"
+    return "Waiting on " + "; ".join(parts)
 
 
 LIFECYCLE = {

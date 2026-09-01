@@ -166,6 +166,33 @@ build a custom role.
 
 ---
 
+## 9. A run's future is invisible; only its past is queryable — *medium*
+
+"Where has this got to, and who owes the next move" is the first question anybody
+asks about a running process. The second half the library answers well:
+`human_task_user` records exactly which people may act on an open task and why
+(`lane_owner`, `lane_assignment`, `process_initiator`, `manual`), which is more
+than most engines expose.
+
+The first half it cannot answer at all. A task exists only once control reaches
+it, so a run sitting at step 1 of 4 has one row and no notion of the other three.
+There is no query for "the steps of this definition" either (#4), so a host that
+wants a progress view has to parse the diagram itself and match it against the
+tasks that exist. Distinguishing "not reached yet" from "skipped down another
+branch" then needs the instance status as well.
+
+`human_task_user.added_by` deserves a mention in `doc/api.md` — it is the single
+most useful field for a worklist UI and is not documented anywhere.
+
+**Suggestion:** a read query returning a definition's task specs, so a host can
+line up progress without a second BPMN parser. The information is already in the
+parsed spec the runtime holds.
+
+*Evidence:* `src/flowdesk/main.py`, `progress_for`;
+`tests/test_flows.py::test_a_run_shows_its_whole_shape_and_who_is_next`
+
+---
+
 ## 8. Editing a user means writing the library's own table — *medium*
 
 Letting somebody change their display name or email address is an ordinary
