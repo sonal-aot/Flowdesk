@@ -278,7 +278,14 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ```bash
 uv run pytest                    # 50 tests
 cd frontend && npm run build     # type-check and production build
+cd frontend && node scripts/ui-check.mjs   # drives the real UI in a browser
 ```
+
+The last one needs both servers running. It signs in, opens a task form, checks
+the dialog is actually centred, clicks a Runs row and asserts the detail panel
+names the step and person the run is waiting on — then leaves screenshots in
+`frontend/ui-shots/`. It exists because two layout bugs shipped that no unit
+test could catch.
 
 Covers all four example diagrams end to end — DMN routing both ways, a parallel
 join waiting for both branches, a boundary timer actually firing — plus

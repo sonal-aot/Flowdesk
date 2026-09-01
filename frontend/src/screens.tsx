@@ -338,7 +338,7 @@ export function Work({
         ))}
       </Stack>
 
-      <Dialog open={open !== null} onClose={() => setOpen(null)} fullWidth sx={{ maxWidth: "sm" }}>
+      <Dialog open={open !== null} onClose={() => setOpen(null)} fullWidth maxWidth="sm">
         {open && (
           <>
             <DialogTitle sx={{ pb: 0.5 }}>
@@ -349,10 +349,17 @@ export function Work({
             </DialogTitle>
             <DialogContent>
               {Object.keys(open.known_data).length > 0 && (
+                <>
+                  <Typography
+                    variant="overline"
+                    sx={{ color: 'text.secondary', display: 'block' }}
+                  >
+                    Submitted earlier
+                  </Typography>
                 <TableContainer
                   component={Paper}
                   variant="outlined"
-                  sx={{ mb: 2, maxHeight: 160 }}
+                  sx={{ mb: 2, maxHeight: 180, overflowY: 'auto' }}
                 >
                   <Table size="small">
                     <TableBody>
@@ -365,6 +372,7 @@ export function Work({
                     </TableBody>
                   </Table>
                 </TableContainer>
+                </>
               )}
               {open.form ? (
                 <TaskForm schema={open.form} busy={busy} onSubmit={submit} />
@@ -480,11 +488,16 @@ export function Runs({
           </TableHead>
           <TableBody>
             {(rows ?? []).map((row) => (
-              <TableRow key={row.id} hover>
+              <TableRow
+                key={row.id}
+                hover
+                onClick={() => show(row.id)}
+                sx={{ cursor: 'pointer' }}
+              >
                 <TableCell>
-                  <Button size="small" onClick={() => show(row.id)}>
+                  <Typography variant="body2" sx={{ color: 'primary.main', fontWeight: 600 }}>
                     #{row.id}
-                  </Button>
+                  </Typography>
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                     {row.started_by}
                   </Typography>
@@ -496,9 +509,20 @@ export function Runs({
                   </Typography>
                 </TableCell>
                 <TableCell>
-                  <Typography variant="body2" color="text.secondary">
-                    {row.waiting_on.join(', ') || '—'}
-                  </Typography>
+                  {row.waiting_step ? (
+                    <>
+                      <Typography variant="body2">{row.waiting_step}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {row.waiting_people.join(', ') ||
+                          row.waiting_on.join(', ') ||
+                          'nobody assigned'}
+                      </Typography>
+                    </>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      —
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell>
                   <StatusChip status={row.status} />
