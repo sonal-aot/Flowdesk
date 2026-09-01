@@ -90,12 +90,15 @@ log.push(`${drawers > 0 ? 'PASS' : 'FAIL'}  drawer opened (found ${drawers})`)
 if (drawers > 0) {
   const text = await detail.innerText()
   log.push('drawer text: ' + text.replace(/\n/g, ' | ').slice(0, 400))
-  // Is the close button actually reachable, or hidden under the app bar?
+  // Is the close button actually hittable, or covered by something?
   const closeBtn = detail.getByRole('button').first()
   const cb = await closeBtn.boundingBox()
-  const bar = await page.locator('header').boundingBox()
+  const covered = await page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y)
+    return el ? el.closest('button') === null : true
+  }, { x: cb.x + cb.width / 2, y: cb.y + cb.height / 2 })
   log.push(
-    `${cb && cb.y >= bar.height - 2 ? 'PASS' : 'FAIL'}  drawer close button clear of the app bar — button y=${cb ? Math.round(cb.y) : 'none'}, app bar height=${Math.round(bar.height)}`,
+    `${covered ? 'FAIL' : 'PASS'}  drawer close button is hittable — at (${Math.round(cb.x)}, ${Math.round(cb.y)})`,
   )
   await detail.screenshot({ path: `${OUT}/6-drawer.png` })
 } else {

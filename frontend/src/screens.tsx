@@ -20,7 +20,6 @@ import {
   TableHead,
   TableRow,
   TextField,
-  Toolbar,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -539,12 +538,16 @@ export function Runs({
         </Box>
       )}
 
-      <Drawer anchor="right" open={open !== null} onClose={() => setOpen(null)}>
+      {/* Above the app bar, so the panel is full height and nothing hovers over
+          it. Otherwise the fixed bar covers the header and its close button. */}
+      <Drawer
+        anchor="right"
+        open={open !== null}
+        onClose={() => setOpen(null)}
+        sx={{ zIndex: (theme) => theme.zIndex.drawer + 2 }}
+      >
         <Box sx={{ width: { xs: '100vw', sm: 420 } }}>
-          {/* The app bar is fixed and sits above the drawer, so leave room for
-              it or the header and close button end up underneath. */}
-          <Toolbar variant="dense" sx={{ minHeight: 56 }} />
-          <Box sx={{ p: 3, pt: 1 }}>
+          <Box sx={{ p: 3 }}>
           {open && (
             <>
               <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
