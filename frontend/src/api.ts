@@ -8,14 +8,6 @@ export interface Company {
   company: string
 }
 
-export interface DemoAccount {
-  username: string
-  name: string
-  title: string
-  library_role: string
-  capabilities: string
-}
-
 export interface Me {
   name: string
   username: string
@@ -200,7 +192,6 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   companies: () => call<Company[]>('/companies'),
-  demoAccounts: () => call<DemoAccount[]>('/demo-accounts'),
   login: (company_id: string, username: string, password: string) =>
     call<{ token: string; expires_at: number }>('/auth/login', {
       method: 'POST',

@@ -346,25 +346,6 @@ def companies() -> list[dict[str, str]]:
     ]
 
 
-@app.get("/demo-accounts")
-def demo_accounts() -> list[dict[str, str]]:
-    """The seeded accounts, so the sign-in screen can offer them.
-
-    A real deployment would not have this route; it exists because there is no
-    identity provider here and the passwords are demo values.
-    """
-    return [
-        {
-            "username": entry.username,
-            "name": entry.name,
-            "title": entry.title,
-            "library_role": entry.library_role,
-            "capabilities": ", ".join(sorted(entry.capabilities)) or "—",
-        }
-        for entry in ACCOUNTS.values()
-    ]
-
-
 @app.post("/auth/login")
 def login(body: LoginIn, session: Session = SessionDep) -> dict[str, Any]:
     if body.company_id not in TENANTS:

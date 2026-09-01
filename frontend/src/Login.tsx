@@ -5,20 +5,13 @@ import {
   Button,
   Card,
   CardContent,
-  Chip,
-  Divider,
   MenuItem,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Typography,
 } from '@mui/material'
 import AccountTreeIcon from '@mui/icons-material/AccountTree'
-import { ApiError, api, token, type Company, type DemoAccount } from './api'
+import { ApiError, api, token, type Company } from './api'
 
 /**
  * Sign-in screen.
@@ -30,7 +23,6 @@ import { ApiError, api, token, type Company, type DemoAccount } from './api'
  */
 export function Login({ onSignedIn }: { onSignedIn: () => void }) {
   const [companies, setCompanies] = useState<Company[]>([])
-  const [accounts, setAccounts] = useState<DemoAccount[]>([])
   const [company, setCompany] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -45,7 +37,6 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
         setCompany(rows[0]?.company_id ?? '')
       })
       .catch((error: ApiError) => setProblem(error.message))
-    api.demoAccounts().then(setAccounts).catch(() => setAccounts([]))
   }, [])
 
   async function submit(event: React.FormEvent) {
@@ -69,12 +60,6 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
     }
   }
 
-  function useAccount(name: string) {
-    setUsername(name)
-    setPassword(name)
-    setProblem(null)
-  }
-
   return (
     <Box
       sx={{
@@ -85,7 +70,7 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
         bgcolor: 'background.default',
       }}
     >
-      <Stack spacing={2} sx={{ width: '100%', maxWidth: 460 }}>
+      <Box sx={{ width: '100%', maxWidth: 420 }}>
         <Card variant="outlined">
           <CardContent sx={{ p: 4 }}>
             <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", mb: 0.5 }}>
@@ -145,59 +130,7 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
           </CardContent>
         </Card>
 
-        <Card variant="outlined">
-          <CardContent>
-            <Typography variant="h2" gutterBottom>
-              Demo accounts
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Each password is the same as the username. Every company has all
-              four.
-            </Typography>
-            <Divider sx={{ mb: 1 }} />
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Account</TableCell>
-                  <TableCell>Can</TableCell>
-                  <TableCell />
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {accounts.map((row) => (
-                  <TableRow key={row.username} hover>
-                    <TableCell>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {row.username}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {row.name} · {row.title}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="caption" color="text.secondary">
-                        {row.capabilities}
-                      </Typography>
-                      <Box sx={{ mt: 0.5 }}>
-                        <Chip
-                          label={`engine role: ${row.library_role}`}
-                          size="small"
-                          variant="outlined"
-                        />
-                      </Box>
-                    </TableCell>
-                    <TableCell align="right">
-                      <Button size="small" onClick={() => useAccount(row.username)}>
-                        Use
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      </Stack>
+      </Box>
     </Box>
   )
 }

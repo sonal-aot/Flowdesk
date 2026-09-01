@@ -24,8 +24,8 @@ cd frontend && npm install && npm run dev
 Open **http://localhost:5173** and sign in. Three example flows are published
 into both companies on startup, so there is something to run immediately.
 
-**Accounts** — every company has all four, and each password is the same as the
-username. The sign-in screen lists them with a one-click fill.
+**Accounts** — every company has all four: `admin`, `editor`, `reviewer`,
+`submitter`. Each password is the same as the username.
 
 | Variable | Default |
 |---|---|

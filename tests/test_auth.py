@@ -167,12 +167,3 @@ def test_only_view_all_roles_see_the_activity_log(client):
             ).status_code
             == 200
         )
-
-
-def test_the_demo_account_list_explains_each_role(client):
-    listed = client.get("/demo-accounts").json()
-    assert [row["username"] for row in listed] == ROLES
-    editor = next(row for row in listed if row["username"] == "editor")
-    assert editor["library_role"] == "admin"
-    assert "publish" in editor["capabilities"]
-    assert "operate" not in editor["capabilities"]
