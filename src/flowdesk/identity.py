@@ -21,7 +21,8 @@ from m8flow_bpmn_core.services.tenant_users import ensure_user_belongs_to_tenant
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from flowdesk.auth import resolve_token
+from flowdesk import store
+from flowdesk.auth import password_version, resolve_token
 from flowdesk.db import get_session
 from flowdesk.seed import service_url
 
@@ -39,7 +40,9 @@ def current_caller(
 ) -> Caller:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise AuthorizationError("Sign in to continue")
-    tenant_id, username = resolve_token(authorization.split(" ", 1)[1].strip())
+    tenant_id, username, version = resolve_token(
+        authorization.split(" ", 1)[1].strip()
+    )
 
     # Usernames repeat across companies, so resolve within the token's tenant.
     user = session.scalar(
@@ -50,6 +53,11 @@ def current_caller(
     )
     if user is None:
         raise AuthorizationError("That account no longer exists")
+
+    # A token issued before a password change must stop working.
+    stored = store.credential(session, tenant_id, username)
+    if stored is None or version != password_version(stored.password_hash):
+        raise AuthorizationError("Your password changed — sign in again")
 
     # The library's own membership rule, applied to reads as well as writes.
     ensure_user_belongs_to_tenant(session, tenant_id=tenant_id, user_id=user.id)

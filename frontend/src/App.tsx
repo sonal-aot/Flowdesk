@@ -27,17 +27,19 @@ import DarkModeIcon from '@mui/icons-material/DarkMode'
 import HubIcon from '@mui/icons-material/Hub'
 import LightModeIcon from '@mui/icons-material/LightMode'
 import LogoutIcon from '@mui/icons-material/Logout'
+import PersonIcon from '@mui/icons-material/Person'
 import MenuIcon from '@mui/icons-material/Menu'
 import SchemaIcon from '@mui/icons-material/Schema'
 import TimelineIcon from '@mui/icons-material/Timeline'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { ApiError, api, token, type Me } from './api'
 import { Login } from './Login'
+import { Profile } from './Profile'
 import { Publish } from './Publish'
 import { Activity, Flows, Runs, Work } from './screens'
 import { NAV_RAIL_WIDTH, NAV_WIDTH, createFlowdeskTheme } from './theme'
 
-type Page = 'flows' | 'work' | 'runs' | 'publish' | 'activity'
+type Page = 'flows' | 'work' | 'runs' | 'publish' | 'activity' | 'profile'
 
 const THEME_KEY = 'flowdesk.theme'
 const NAV_KEY = 'flowdesk.navCollapsed'
@@ -262,6 +264,18 @@ export default function App() {
                 </Typography>
               </Box>
               <Divider />
+              <MenuItem
+                onClick={() => {
+                  setUserMenu(null)
+                  setFocusRun(null)
+                  setPage('profile')
+                }}
+              >
+                <ListItemIcon>
+                  <PersonIcon fontSize="small" />
+                </ListItemIcon>
+                Profile
+              </MenuItem>
               <MenuItem onClick={signOut}>
                 <ListItemIcon>
                   <LogoutIcon sx={{ fontSize: "small" }} />
@@ -355,6 +369,9 @@ export default function App() {
             )}
             {me && page === 'activity' && (
               <Activity reloadKey={reloadKey} onError={fail} />
+            )}
+            {me && page === 'profile' && (
+              <Profile me={me} onChanged={reload} onError={fail} />
             )}
           </Box>
         </Box>

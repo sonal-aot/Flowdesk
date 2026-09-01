@@ -151,6 +151,32 @@ build a custom role.
 
 ---
 
+## 8. Editing a user means writing the library's own table — *medium*
+
+Letting somebody change their display name or email address is an ordinary
+requirement, and there is no API for it: `doc/gaps.md` lists user create, update
+and delete as missing. So the app imports `UserModel` and assigns to it
+directly.
+
+That works, but it puts the host inside the library's schema for a routine
+operation, and it is quietly dangerous: `UserModel.service` is the field the
+library string-parses to decide tenant membership (#3 in app #1's findings). A
+host that exposes "edit your profile" over the whole model — the obvious
+implementation — would let anybody move themselves into another company by
+editing one text field. This app allows exactly two fields for that reason.
+
+Credentials are the app's problem too, which is reasonable, but it means every
+host reimplements password hashing and session handling.
+
+**Suggestion:** an `UpdateUserCommand` covering the safe fields, with `service`
+and `service_id` not settable through it. Even a documented note saying "these
+two fields are security-critical, do not expose them" would help.
+
+*Evidence:* `src/flowdesk/main.py`, `update_profile`;
+`tests/test_profile.py::test_editing_a_profile_does_not_move_you_between_companies`
+
+---
+
 ## 6. Confirmed again from app #1
 
 These reproduced here unchanged, which suggests they are structural rather than
@@ -193,3 +219,4 @@ particular to one app:
 3. Populate `form_file_name` (#3), or remove the columns.
 4. Add the four read queries a console needs (#4).
 5. Make roles composable so a host can express its own (#7).
+6. Add a safe user-update command (#8).

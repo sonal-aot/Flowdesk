@@ -11,6 +11,7 @@ export interface Company {
 export interface Me {
   name: string
   username: string
+  email: string
   title: string
   role: string
   library_role: string
@@ -199,6 +200,18 @@ export const api = {
     }),
 
   me: () => call<Me>('/me'),
+
+  updateProfile: (changes: { name?: string; email?: string }) =>
+    call<{ name: string; email: string; username: string }>('/me', {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+
+  changePassword: (current_password: string, new_password: string) =>
+    call<{ token: string; expires_at: number }>('/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    }),
 
   flows: () => call<FlowSummary[]>('/flows'),
   flow: (processId: string) => call<FlowSummary>(`/flows/${processId}`),

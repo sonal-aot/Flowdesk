@@ -81,11 +81,27 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def issue_token(*, tenant_id: str, username: str) -> tuple[str, int]:
+def password_version(password_hash: str) -> str:
+    """A short fingerprint of the stored password.
+
+    It travels in the token so that changing a password invalidates sessions
+    issued against the old one -- without a server-side session table.
+    """
+    return hashlib.sha256(password_hash.encode()).hexdigest()[:12]
+
+
+def issue_token(
+    *, tenant_id: str, username: str, password_hash: str = ""
+) -> tuple[str, int]:
     """Returns the token and when it expires, in epoch seconds."""
     expires_at = int(time.time()) + TOKEN_TTL_SECONDS
     payload = json.dumps(
-        {"tenant": tenant_id, "user": username, "exp": expires_at},
+        {
+            "tenant": tenant_id,
+            "user": username,
+            "exp": expires_at,
+            "pv": password_version(password_hash) if password_hash else "",
+        },
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
@@ -93,8 +109,8 @@ def issue_token(*, tenant_id: str, username: str) -> tuple[str, int]:
     return f"{body}.{_sign(payload)}", expires_at
 
 
-def resolve_token(token: str) -> tuple[str, str]:
-    """Returns (tenant_id, username), or raises if the token is no good."""
+def resolve_token(token: str) -> tuple[str, str, str]:
+    """Returns (tenant_id, username, password_version), or raises."""
     try:
         body, signature = token.split(".", 1)
         payload = _unb64(body)
@@ -107,4 +123,4 @@ def resolve_token(token: str) -> tuple[str, str]:
     claims = json.loads(payload)
     if int(claims.get("exp", 0)) < time.time():
         raise AuthorizationError("Your session has expired — sign in again")
-    return str(claims["tenant"]), str(claims["user"])
+    return str(claims["tenant"]), str(claims["user"]), str(claims.get("pv", ""))

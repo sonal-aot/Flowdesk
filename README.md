@@ -21,11 +21,9 @@ uv run flowdesk
 cd frontend && npm install && npm run dev
 ```
 
-Open **http://localhost:5173** and sign in. Three example flows are published
-into both companies on startup, so there is something to run immediately.
-
-**Accounts** — every company has all four: `admin`, `editor`, `reviewer`,
-`submitter`. Each password is the same as the username.
+Open **http://localhost:5173** and sign in with any account from
+[Signing in](#signing-in) below. Three example flows are published into both
+companies on startup, so there is something to run immediately.
 
 | Variable | Default |
 |---|---|
@@ -58,14 +56,70 @@ Two of those rows are the library's doing and two are this app's:
 
 ## Signing in
 
+Pick a **company**, then a username and password.
+
+### Demo accounts
+
+**Both companies have all four accounts, and every password is the same as the
+username.** So `admin` / `admin`, `editor` / `editor`, and so on.
+
+| Company | Username | Password | Person | Job title |
+|---|---|---|---|---|
+| Northwind Traders | `admin` | `admin` | Alex Admin | Workspace Administrator |
+| Northwind Traders | `editor` | `editor` | Erin Editor | Process Designer |
+| Northwind Traders | `reviewer` | `reviewer` | Riya Reviewer | Approver |
+| Northwind Traders | `submitter` | `submitter` | Sam Submitter | Team Member |
+| Initech | `admin` | `admin` | Alex Admin | Workspace Administrator |
+| Initech | `editor` | `editor` | Erin Editor | Process Designer |
+| Initech | `reviewer` | `reviewer` | Riya Reviewer | Approver |
+| Initech | `submitter` | `submitter` | Sam Submitter | Team Member |
+
+The two companies share the same four usernames deliberately: they are separate
+accounts with separate data, so if tenant scoping ever leaked it would show up as
+the wrong person's work rather than a tidy error. Signing in as Northwind's
+`admin` shows nothing belonging to Initech.
+
+**Which account to use for what:**
+
+| To try this | Sign in as |
+|---|---|
+| Browse and start a flow, fill in a form | `submitter` |
+| Approve something — the second step of a flow | `reviewer` |
+| Upload a new BPMN diagram | `editor` |
+| Hold, cancel or retry a run; see the activity log | `admin` |
+
+A quick tour: sign in as `submitter`, start **Expense Approval**, enter an amount
+over 100, submit. Sign out, sign in as `reviewer`, and the approval is waiting in
+**My work**. Enter 100 or less instead and the decision table approves it without
+a reviewer at all.
+
+### Your profile
+
+Anybody can change their own **name**, **email** and **password** from the user
+menu in the top-right → *Profile*. Roles are not editable there — an
+administrator sets those.
+
+Changing a password signs every other session out, and the session doing the
+changing gets a fresh token so it stays signed in. New passwords must be at
+least 8 characters.
+
+If you change a demo password and want the documented ones back: stop the
+backend, delete `flowdesk.db`, start it again.
+
+### How the login works
+
 There is no identity provider here, so logins are a password form against the
 app's own credential table: PBKDF2 hashes, and an HMAC-signed token carrying the
 tenant, the username and an expiry. **The tenant is inside the signed token**, so
 a caller cannot name a tenant of their choosing — which matters, because the
 library trusts whatever tenant id it is handed on the read side.
 
-Swapping this for real OIDC means replacing `resolve_token` and the login route.
-Set `FLOWDESK_SECRET_KEY` in anything resembling a real deployment.
+Sessions last 12 hours (`FLOWDESK_SESSION_HOURS`) and the token is kept in
+`localStorage`, so a reload does not sign you out.
+
+These are demo credentials in a demo app. Swapping this for real OIDC means
+replacing `resolve_token` and the login route, and `FLOWDESK_SECRET_KEY` must be
+set to something private in anything resembling a real deployment.
 
 > **Publishing a flow runs its code.** A diagram's script tasks execute Python
 > inside the server process, and its service tasks make real outbound calls. That
@@ -80,6 +134,7 @@ Set `FLOWDESK_SECRET_KEY` in anything resembling a real deployment.
 | **Runs** | Every instance, filterable by status. The detail panel shows steps, collected data, service-task calls and the full event log, plus hold / release / retry / cancel for operators |
 | **Publish** | Designers only: upload a diagram, see what the console found in it, assign lane owners, supply form schemas, publish |
 | **Activity** | Every connector call the workspace's flows have made |
+| **Profile** | Your own name, email and password (user menu, top-right) |
 
 The shell follows m8flow's: MUI, a collapsible icon rail, a light/dark switch and
 the company shown in the header — all persisted in localStorage. Task forms use
@@ -114,6 +169,7 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 |---|---|
 | `src/flowdesk/main.py` | The API: flows, runs, tasks, activity |
 | `src/flowdesk/auth.py` | Password hashing and signed session tokens |
+| `frontend/src/Profile.tsx` | Editing your own name, email and password |
 | `src/flowdesk/seed.py` | Companies, the four accounts, roles and capabilities |
 | `src/flowdesk/bpmn_inspect.py` | Reads lanes, steps, forms, decisions and timers out of a diagram |
 | `src/flowdesk/connectors.py` | The service-task connectors and their registry scope |
@@ -128,7 +184,7 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ## Tests
 
 ```bash
-uv run pytest                    # 32 tests
+uv run pytest                    # 43 tests
 cd frontend && npm run build     # type-check and production build
 ```
 
@@ -136,8 +192,9 @@ Covers all three bundled flows end to end — DMN routing both ways, a parallel
 join waiting for both branches, a boundary timer actually firing — plus
 publishing a brand-new flow and running it, every permission boundary, lane
 restriction, company isolation, and the login path: wrong passwords, tampered
-tokens, expired tokens, and the fact that a failed login says the same thing
-whether or not the account exists.
+tokens, expired tokens, the fact that a failed login says the same thing whether
+or not the account exists, and profile editing — including that changing a
+password invalidates other sessions and cannot move you between companies.
 
 ## Findings
 

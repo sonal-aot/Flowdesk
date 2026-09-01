@@ -41,7 +41,7 @@ from flowdesk.db import get_session, init_schema, session_factory
 from flowdesk.errors import register_error_handlers
 from flowdesk.identity import Caller, current_caller
 from flowdesk.scheduler import scheduler_running
-from flowdesk.auth import issue_token, verify_password
+from flowdesk.auth import hash_password, issue_token, verify_password
 from flowdesk.seed import (
     ACCOUNTS,
     CONFIGURE,
@@ -78,6 +78,16 @@ class LoginIn(BaseModel):
     company_id: str = Field(min_length=1)
     username: str = Field(min_length=1)
     password: str = Field(min_length=1)
+
+
+class ProfileIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    email: str | None = Field(default=None, min_length=3, max_length=255)
+
+
+class PasswordIn(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class InspectIn(BaseModel):
@@ -356,7 +366,9 @@ def login(body: LoginIn, session: Session = SessionDep) -> dict[str, Any]:
         raise AuthorizationError("Unknown company, username or password")
 
     token, expires_at = issue_token(
-        tenant_id=body.company_id, username=body.username
+        tenant_id=body.company_id,
+        username=body.username,
+        password_hash=stored.password_hash,
     )
     return {"token": token, "expires_at": expires_at}
 
@@ -373,6 +385,7 @@ def me(caller: Caller = CallerDep, session: Session = SessionDep) -> dict[str, A
     return {
         "name": person.display_name or entry.name,
         "username": caller.username,
+        "email": person.email or "",
         "title": entry.title,
         "role": caller.username,
         "library_role": entry.library_role,
@@ -393,6 +406,75 @@ def me(caller: Caller = CallerDep, session: Session = SessionDep) -> dict[str, A
 # --------------------------------------------------------------------------- #
 # Flows
 # --------------------------------------------------------------------------- #
+
+
+@app.patch("/me")
+def update_profile(
+    body: ProfileIn,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Change your own display name or email address.
+
+    These live on the library's `user` table, and the library has no user
+    management API, so the app writes the model directly. Only the two display
+    fields are editable: `service` and `service_id` are what the library parses
+    to decide tenant membership, so letting anybody edit those would let them
+    move themselves between companies. See FINDINGS #8.
+    """
+    person = session.get(UserModel, caller.user_id)
+    if person is None:  # pragma: no cover - the caller was just resolved
+        raise NotFoundError("That account no longer exists")
+
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise ValidationError("Your name cannot be blank")
+        person.display_name = name
+
+    if body.email is not None:
+        email = body.email.strip()
+        if "@" not in email or email.startswith("@") or email.endswith("@"):
+            raise ValidationError("That does not look like an email address")
+        person.email = email
+
+    person.updated_at_in_seconds = now()
+    session.flush()
+    return {
+        "name": person.display_name,
+        "email": person.email or "",
+        "username": caller.username,
+    }
+
+
+@app.post("/me/password")
+def change_password(
+    body: PasswordIn,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Change your own password, proving you know the current one.
+
+    Every token carries a fingerprint of the password it was issued against, so
+    changing it signs out every other session. A fresh token comes back so the
+    caller doing the changing stays signed in.
+    """
+    stored = store.credential(session, caller.tenant_id, caller.username)
+    if stored is None or not verify_password(
+        body.current_password, stored.password_hash
+    ):
+        raise AuthorizationError("That is not your current password")
+    if body.new_password == body.current_password:
+        raise ValidationError("The new password must be different")
+
+    stored.password_hash = hash_password(body.new_password)
+    session.flush()
+    token, expires_at = issue_token(
+        tenant_id=caller.tenant_id,
+        username=caller.username,
+        password_hash=stored.password_hash,
+    )
+    return {"token": token, "expires_at": expires_at}
 
 
 @app.get("/operations")
