@@ -149,8 +149,10 @@ opening anything. Click any row for the detail panel, which shows:
 - **The flow** — every step of the diagram in order, marked done / waiting now /
   still to come, with who did each one and when, and for the waiting step the
   actual people who can act on it and why they have it
-- Data collected so far, service-task calls, the full engine event log, and hold
-  / release / retry / cancel for operators
+- Data collected so far, service-task calls, and the full engine event log
+- **Operate** — only the actions the engine would actually accept: hold and
+  cancel while a run is live, release once it is on hold, retry only for an
+  errored run, and nothing at all once it has finished, with a line saying so
 
 Steps a run never reached are shown as *not needed — the run went another way*,
 so a flow that skipped its approver reads correctly rather than looking stuck.
@@ -276,7 +278,7 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ## Tests
 
 ```bash
-uv run pytest                    # 50 tests
+uv run pytest                    # 53 tests
 cd frontend && npm run build     # type-check and production build
 cd frontend && node scripts/ui-check.mjs   # drives the real UI in a browser
 ```

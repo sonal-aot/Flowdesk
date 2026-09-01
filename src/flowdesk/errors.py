@@ -59,6 +59,10 @@ def message_for(exc: BpmnCoreError, status_code: int) -> str:
     """
     if status_code == 422 and isinstance(exc, ValidationError):
         return str(exc)
+    # A conflict the app raised itself already reads as a sentence; the library's
+    # own wording ("Cannot suspend a terminal process instance") does not.
+    if status_code == 409 and str(exc).startswith("This run is "):
+        return str(exc)
     return MESSAGE_BY_STATUS.get(status_code, MESSAGE_BY_STATUS[400])
 
 

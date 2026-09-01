@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from m8flow_bpmn_core import api
 from m8flow_bpmn_core.errors import (
     AuthorizationError,
+    InvalidStateError,
     NotFoundError,
     ValidationError,
 )
@@ -29,6 +30,7 @@ from m8flow_bpmn_core.models.bpmn_process_definition import (
     BpmnProcessDefinitionModel,
 )
 from m8flow_bpmn_core.models.human_task import HumanTaskModel
+from m8flow_bpmn_core.models.process_instance import ProcessInstanceModel
 from m8flow_bpmn_core.models.human_task_user import HumanTaskUserModel
 from m8flow_bpmn_core.models.user import UserModel
 from pydantic import BaseModel, Field
@@ -751,6 +753,10 @@ def get_instance(
         directory=directory,
     )
     row["next_action"] = next_action_line(row["progress"], str(instance.status))
+    row["allowed_actions"] = allowed_actions(instance)
+    row["no_actions_reason"] = (
+        None if row["allowed_actions"] else why_no_actions(str(instance.status))
+    )
     row["activity"] = [
         {
             "operation_id": call.operation_id,
@@ -770,6 +776,43 @@ def get_instance(
         )
     ]
     return row
+
+
+#: What each lifecycle action needs to be true, taken from the library's own
+#: preconditions rather than guessed:
+#:   suspend   -- not terminal, not already suspended  (process_instances.py:264)
+#:   resume    -- suspended only                                        (:361)
+#:   terminate -- not terminal                                          (:521)
+#:   retry     -- errored only                                          (:407)
+ACTION_LABELS = {
+    "hold": "put on hold",
+    "release": "released",
+    "cancel": "cancelled",
+    "retry": "retried",
+}
+
+
+def allowed_actions(instance: Any) -> list[str]:
+    """Which lifecycle actions the engine would actually accept right now."""
+    status = str(instance.status)
+    terminal = status in ProcessInstanceModel.terminal_statuses()
+    actions: list[str] = []
+    if not terminal and status != "suspended":
+        actions.append("hold")
+    if status == "suspended":
+        actions.append("release")
+    if not terminal:
+        actions.append("cancel")
+    if status == "error":
+        actions.append("retry")
+    return actions
+
+
+def why_no_actions(status: str) -> str:
+    return {
+        "complete": "This run has finished, so there is nothing to operate.",
+        "terminated": "This run was cancelled, so there is nothing to operate.",
+    }.get(status, "There is nothing to operate on this run right now.")
 
 
 WHY_ASSIGNED = {
@@ -907,6 +950,20 @@ def lifecycle(
     command_type = LIFECYCLE.get(action)
     if command_type is None:
         raise NotFoundError(f"There is no '{action}' action")
+
+    # The engine would refuse this anyway; saying so plainly beats a generic
+    # conflict, and it keeps the API honest if a screen is out of date.
+    current = api.execute_query(
+        session,
+        api.GetProcessInstanceQuery(
+            tenant_id=caller.tenant_id, process_instance_id=instance_id
+        ),
+    )
+    if action not in allowed_actions(current):
+        raise InvalidStateError(
+            f"This run is {str(current.status).replace('_', ' ')}, so it cannot be "
+            f"{ACTION_LABELS[action]}."
+        )
     with service_tasks(session, caller.tenant_id):
         instance = api.execute_command(
             session,

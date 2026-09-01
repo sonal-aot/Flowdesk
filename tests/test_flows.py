@@ -672,3 +672,75 @@ def test_a_parallel_run_names_both_people_waiting(client):
     ]
     assert "Riya Reviewer" in detail["next_action"]
     assert "Erin Editor" in detail["next_action"]
+
+
+def test_only_the_actions_the_engine_accepts_are_offered(client):
+    """A finished run must not be offered Hold, Retry or Cancel.
+
+    The rules are the library's own preconditions, not guesses: suspend needs a
+    non-terminal, non-suspended run; resume needs a suspended one; terminate
+    needs a non-terminal one; retry needs an errored one.
+    """
+    publish_fixture(client, "two_step_request")
+    instance_id = start(client, "Process_two_step_request")
+
+    def state():
+        detail = instance(client, instance_id)
+        return detail["status"], detail["allowed_actions"], detail["no_actions_reason"]
+
+    status, actions, reason = state()
+    assert status == "user_input_required"
+    assert actions == ["hold", "cancel"]
+    assert reason is None
+
+    # On hold: release and cancel, but not hold again.
+    client.post(f"/instances/{instance_id}/hold", headers=h(ADMIN))
+    assert state()[1] == ["release", "cancel"]
+    client.post(f"/instances/{instance_id}/release", headers=h(ADMIN))
+
+    # Run it to completion.
+    submit_task = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submit_task["id"], {"subject": "Desk", "details": "Wobbly"})
+    review = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
+    complete(client, review["id"], {"decision": "approved"}, REVIEWER)
+
+    status, actions, reason = state()
+    assert status == "complete"
+    assert actions == []
+    assert reason == "This run has finished, so there is nothing to operate."
+
+
+def test_operating_a_finished_run_says_why(client):
+    publish_fixture(client, "two_step_request")
+    instance_id = start(client, "Process_two_step_request")
+    submit_task = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submit_task["id"], {"subject": "Desk", "details": "Wobbly"})
+    review = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
+    complete(client, review["id"], {"decision": "approved"}, REVIEWER)
+
+    for action, wording in (
+        ("hold", "put on hold"),
+        ("cancel", "cancelled"),
+        ("retry", "retried"),
+        ("release", "released"),
+    ):
+        response = client.post(f"/instances/{instance_id}/{action}", headers=h(ADMIN))
+        assert response.status_code == 409, (action, response.text)
+        assert response.json()["message"] == (
+            f"This run is complete, so it cannot be {wording}."
+        )
+
+
+def test_a_cancelled_run_offers_nothing_either(client):
+    publish_fixture(client, "two_step_request")
+    instance_id = start(client, "Process_two_step_request")
+    client.post(f"/instances/{instance_id}/cancel", headers=h(ADMIN))
+
+    detail = instance(client, instance_id)
+    assert detail["status"] == "terminated"
+    assert detail["allowed_actions"] == []
+    assert detail["no_actions_reason"].startswith("This run was cancelled")

@@ -95,6 +95,33 @@ if (drawers > 0) {
   log.push('body text after click: ' + (await page.locator('main').innerText()).replace(/\n/g, ' | ').slice(0, 300))
 }
 
+// --- 3. a finished run must offer no Operate buttons
+{
+  // Close the panel from step 2 first; its backdrop swallows clicks.
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(600)
+  const admin = await tok('admin')
+  const runs = await (await fetch(`${API}/instances`, { headers: { Authorization: `Bearer ${admin}` } })).json()
+  const finished = runs.find((r) => r.status === 'complete')
+  if (finished) {
+    await page.locator(`table tbody tr`, { hasText: `#${finished.id}` }).first().click()
+    await page.waitForTimeout(1200)
+    const panel = page.locator('.MuiDrawer-paper').filter({ hasText: 'Next action' })
+    const text = await panel.innerText()
+    const buttons = await panel.getByRole('button').allInnerTexts()
+    const offered = buttons.filter((b) => ['Hold', 'Release', 'Retry', 'Cancel'].includes(b))
+    log.push(
+      `${offered.length === 0 ? 'PASS' : 'FAIL'}  finished run offers no lifecycle buttons — found [${offered.join(', ')}]`,
+    )
+    log.push(
+      `${/nothing to operate/.test(text) ? 'PASS' : 'FAIL'}  finished run explains why`,
+    )
+    await panel.screenshot({ path: `${OUT}/7-finished-run.png` })
+  } else {
+    log.push('SKIP  no completed run to check')
+  }
+}
+
 await browser.close()
 console.log(log.join('\n'))
 if (log.some((line) => line.startsWith('FAIL') || line.startsWith('PAGE ERROR'))) {

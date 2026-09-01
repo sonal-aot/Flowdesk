@@ -166,6 +166,29 @@ build a custom role.
 
 ---
 
+## 10. Lifecycle preconditions are enforced but not published — *low*
+
+Each lifecycle command has a precondition, and they differ in ways that are not
+guessable: suspend needs a non-terminal, non-suspended run; resume needs a
+suspended one; terminate needs a non-terminal one; **retry needs an errored one
+specifically**, even though `error` is itself a terminal status. The model has
+`has_terminal_status()` and `terminal_statuses()` but nothing that answers "what
+can I do to this instance now".
+
+A UI that offers a button the engine will refuse is a bug, so a host has to
+either read the service source (which is what we did -- the rules are at
+`process_instances.py:264, 361, 407, 521`) or discover them by catching
+`InvalidStateError` in production.
+
+**Suggestion:** put `can_suspend()`, `can_resume()`, `can_terminate()` and
+`can_retry()` on `ProcessInstanceModel` next to the predicates already there, or
+document the four preconditions in `doc/api.md`.
+
+*Evidence:* `src/flowdesk/main.py`, `allowed_actions`;
+`tests/test_flows.py::test_only_the_actions_the_engine_accepts_are_offered`
+
+---
+
 ## 9. A run's future is invisible; only its past is queryable — *medium*
 
 "Where has this got to, and who owes the next move" is the first question anybody
@@ -262,3 +285,4 @@ particular to one app:
 4. Add the four read queries a console needs (#4).
 5. Make roles composable so a host can express its own (#7).
 6. Add a safe user-update command (#8).
+7. Publish the lifecycle preconditions (#10).

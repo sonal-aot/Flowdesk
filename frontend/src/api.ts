@@ -109,6 +109,8 @@ export interface InstanceDetail extends InstanceRow {
   events: { event: string; by: string | null; at: string }[]
   progress: ProgressStep[]
   next_action: string
+  allowed_actions: string[]
+  no_actions_reason: string | null
   activity: { operation_id: string; outcome: string; detail: string; at: string }[]
 }
 

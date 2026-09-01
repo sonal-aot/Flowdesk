@@ -625,28 +625,39 @@ export function Runs({
 
               {me.can_operate && (
                 <Section title="Operate">
-                  <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
-                    {open.status === 'suspended' ? (
-                      <Button size="small" variant="outlined" onClick={() => act(open.id, 'release')}>
-                        Release
-                      </Button>
-                    ) : (
-                      <Button size="small" variant="outlined" onClick={() => act(open.id, 'hold')}>
-                        Hold
-                      </Button>
-                    )}
-                    <Button size="small" variant="outlined" onClick={() => act(open.id, 'retry')}>
-                      Retry
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="error"
-                      onClick={() => act(open.id, 'cancel')}
-                    >
-                      Cancel
-                    </Button>
-                  </Stack>
+                  {open.allowed_actions.length === 0 ? (
+                    <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                      {open.no_actions_reason}
+                    </Typography>
+                  ) : (
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }} useFlexGap>
+                      {open.allowed_actions.includes('hold') && (
+                        <Button size="small" variant="outlined" onClick={() => act(open.id, 'hold')}>
+                          Hold
+                        </Button>
+                      )}
+                      {open.allowed_actions.includes('release') && (
+                        <Button size="small" variant="outlined" onClick={() => act(open.id, 'release')}>
+                          Release
+                        </Button>
+                      )}
+                      {open.allowed_actions.includes('retry') && (
+                        <Button size="small" variant="outlined" onClick={() => act(open.id, 'retry')}>
+                          Retry
+                        </Button>
+                      )}
+                      {open.allowed_actions.includes('cancel') && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="error"
+                          onClick={() => act(open.id, 'cancel')}
+                        >
+                          Cancel
+                        </Button>
+                      )}
+                    </Stack>
+                  )}
                 </Section>
               )}
             </>
