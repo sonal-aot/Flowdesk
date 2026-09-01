@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import time
 
-from conftest import auth_headers
+import json
+
+from conftest import FIXTURES, auth_headers, publish_fixture
 
 ADMIN = ("northwind", "admin")
 EDITOR = ("northwind", "editor")
@@ -59,18 +61,31 @@ def instance(client, instance_id, who=SUBMITTER):
     return response.json()
 
 
-def test_the_bundled_flows_are_published_to_every_company(client):
-    listed = flows(client)
-    assert [row["process_id"] for row in listed] == [
-        "Process_access_request",
-        "Process_expense_approval",
-        "Process_incident_response",
+def test_a_new_workspace_has_no_flows(client):
+    """Nothing is bundled: a flow exists only once somebody publishes it."""
+    assert flows(client) == []
+    assert flows(client, ("initech", "submitter")) == []
+
+
+def test_a_published_flow_belongs_to_its_company_alone(client):
+    publish_fixture(client, "expense_approval", tenant="northwind")
+
+    assert [row["process_id"] for row in flows(client)] == [
+        "Process_expense_approval"
     ]
-    # Published once per company, not shared between them.
-    assert len(flows(client, ("initech", "submitter"))) == 3
+    # Initech published nothing, so Initech has nothing -- same diagram or not.
+    assert flows(client, ("initech", "submitter")) == []
+    assert (
+        client.get(
+            "/flows/Process_expense_approval",
+            headers=auth_headers(client, "initech", "admin"),
+        ).status_code
+        == 404
+    )
 
 
 def test_a_flow_advertises_what_is_inside_it(client):
+    publish_fixture(client, "expense_approval")
     expense = next(
         row for row in flows(client) if row["process_id"] == "Process_expense_approval"
     )
@@ -88,6 +103,7 @@ def test_a_flow_advertises_what_is_inside_it(client):
 
 
 def test_expense_over_the_threshold_needs_an_approver(client):
+    publish_fixture(client, "expense_approval")
     instance_id = start(client, "Process_expense_approval")
 
     submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
@@ -105,12 +121,20 @@ def test_expense_over_the_threshold_needs_an_approver(client):
         {"amount": 250, "purpose": "Conference ticket", "cost_centre": "Engineering"},
     )
 
-    approve = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    # The Approver lane belongs to the reviewer, so it is not in the
+    # submitter's worklist at all.
+    assert not [t for t in open_tasks(client) if t["instance_id"] == instance_id]
+    approve = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
     assert approve["name"] == "Approve Expense Claim"
     assert approve["lane"] == "Approver"
 
     result = complete(
-        client, approve["id"], {"decision": "approved", "approver_note": "Fine"}
+        client,
+        approve["id"],
+        {"decision": "approved", "approver_note": "Fine"},
+        REVIEWER,
     )
     assert result["instance_status"] == "complete"
 
@@ -123,6 +147,7 @@ def test_expense_over_the_threshold_needs_an_approver(client):
 
 
 def test_expense_within_policy_skips_the_approver(client):
+    publish_fixture(client, "expense_approval")
     instance_id = start(client, "Process_expense_approval")
     submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
     result = complete(
@@ -136,11 +161,19 @@ def test_expense_within_policy_skips_the_approver(client):
 
 
 def test_a_parallel_flow_opens_two_tasks_at_once(client):
+    publish_fixture(client, "incident_response")
     instance_id = start(client, "Process_incident_response")
     report = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
     complete(client, report["id"], {"title": "Checkout 500s", "severity": "sev1"})
 
-    waiting = [t for t in open_tasks(client) if t["instance_id"] == instance_id]
+    # Engineering is the reviewer's, Support is the editor's.
+    triage_tasks = [
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    ]
+    comms_tasks = [
+        t for t in open_tasks(client, EDITOR) if t["instance_id"] == instance_id
+    ]
+    waiting = triage_tasks + comms_tasks
     assert sorted(t["name"] for t in waiting) == [
         "Customer Communication",
         "Technical Triage",
@@ -154,10 +187,15 @@ def test_a_parallel_flow_opens_two_tasks_at_once(client):
     comms = next(t for t in waiting if t["name"] == "Customer Communication")
 
     # Finishing one leaves the other open: the join waits for both.
-    complete(client, triage["id"], {"root_cause": "bad deploy", "mitigated": True})
+    complete(
+        client,
+        triage["id"],
+        {"root_cause": "bad deploy", "mitigated": True},
+        REVIEWER,
+    )
     assert instance(client, instance_id)["status"] != "complete"
 
-    result = complete(client, comms["id"], {"channel": "status page"})
+    result = complete(client, comms["id"], {"channel": "status page"}, EDITOR)
     assert result["instance_status"] == "complete"
 
     detail = instance(client, instance_id)
@@ -294,6 +332,7 @@ def test_inspect_reports_a_diagram_without_publishing_it(client):
 def test_a_reviewer_cannot_start_a_flow(client):
     """V1 roles are not a hierarchy: reviewer maps to `manager`, which has no
     process.start, so a reviewer cannot start a flow."""
+    publish_fixture(client, "expense_approval")
     response = client.post(
         "/flows/Process_expense_approval/start", json={}, headers=h(REVIEWER)
     )
@@ -301,6 +340,7 @@ def test_a_reviewer_cannot_start_a_flow(client):
 
 
 def test_operators_can_hold_release_and_cancel(client):
+    publish_fixture(client, "incident_response")
     instance_id = start(client, "Process_incident_response")
 
     assert (
@@ -328,34 +368,11 @@ def test_operators_can_hold_release_and_cancel(client):
 
 def test_a_boundary_timer_moves_the_work_on(client):
     """Published with a two-second window so the poller fires inside the test."""
-    original = client.get(
-        "/flows/Process_access_request/diagram", headers=h(ADMIN)
-    ).json()["bpmn"]
-    hurried = original.replace("'PT10M'", "'PT2S'")
-    forms = {
-        "request-access.json": {
-            "type": "object",
-            "properties": {"system": {"type": "string"}},
-        },
-        "owner-review.json": {
-            "type": "object",
-            "properties": {"verdict": {"type": "string"}},
-        },
-    }
-    published = client.post(
-        "/flows",
-        json={
-            "bpmn": hurried,
-            "forms": forms,
-            "lane_owners": {
-                "Requester": ["submitter"],
-                "System Owner": ["reviewer"],
-                "Security": ["reviewer"],
-            },
-        },
-        headers=h(ADMIN),
+    publish_fixture(
+        client,
+        "access_request",
+        edit=lambda bpmn: bpmn.replace("'PT10M'", "'PT2S'"),
     )
-    assert published.status_code == 201, published.text
 
     instance_id = start(client, "Process_access_request")
     request_task = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
@@ -385,6 +402,8 @@ def test_a_boundary_timer_moves_the_work_on(client):
 
 
 def test_companies_are_isolated(client):
+    publish_fixture(client, "expense_approval", tenant="northwind")
+    publish_fixture(client, "expense_approval", tenant="initech")
     northwind_id = start(client, "Process_expense_approval")
     initech_id = start(client, "Process_expense_approval", ("initech", "submitter"))
 
@@ -400,6 +419,7 @@ def test_companies_are_isolated(client):
 
 
 def test_the_activity_log_lists_connector_calls(client):
+    publish_fixture(client, "expense_approval")
     instance_id = start(client, "Process_expense_approval")
     submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
     complete(client, submit["id"], {"amount": 10, "purpose": "Coffee"})
@@ -420,44 +440,105 @@ def test_the_console_lists_the_operations_a_diagram_may_call(client):
     }
 
 
-def test_republishing_does_not_revoke_a_lane(client):
-    """A library behaviour worth pinning: lane ownership only ever widens.
+def test_republishing_narrows_a_lane(client):
+    """The library only ever widens lane membership; the app reconciles it.
 
-    The bundled flows are published with every account owning every lane. Naming
-    a narrower set on a later publish does NOT take anybody off the lane, so a
-    leaver cannot be removed by republishing. See FINDINGS.md.
+    Published first with two owners, then again with one. The dropped owner must
+    actually lose the work.
     """
-    bpmn = client.get(
-        "/flows/Process_access_request/diagram", headers=h(ADMIN)
-    ).json()["bpmn"]
-    forms = {
-        "request-access.json": {"type": "object"},
-        "owner-review.json": {"type": "object"},
-    }
-    published = client.post(
+    publish_fixture(
+        client,
+        "access_request",
+        lanes={
+            "Requester": ["submitter"],
+            "System Owner": ["reviewer", "editor"],
+            "Security": ["admin"],
+        },
+    )
+    first = client.get("/flows/Process_access_request", headers=h(ADMIN)).json()
+    assert first["lane_owners"]["System Owner"] == ["editor", "reviewer"]
+
+    republished = publish_fixture(
+        client,
+        "access_request",
+        edit=lambda bpmn: bpmn.replace("'PT10M'", "'PT9M'"),
+        lanes={
+            "Requester": ["submitter"],
+            "System Owner": ["reviewer"],
+            "Security": ["admin"],
+        },
+    )
+    assert republished["lane_owners"]["System Owner"] == ["reviewer"]
+
+    instance_id = start(client, "Process_access_request")
+    submitted = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submitted["id"], {"system": "Production database"})
+
+    # The remaining owner has it; the dropped one does not.
+    assert [
+        t["name"]
+        for t in open_tasks(client, REVIEWER)
+        if t["instance_id"] == instance_id
+    ] == ["System Owner Review"]
+    assert not [
+        t
+        for t in open_tasks(client, EDITOR)
+        if t["instance_id"] == instance_id
+    ]
+
+
+def test_every_lane_must_have_an_owner(client):
+    forms = json.loads(
+        (FIXTURES / "expense_approval.forms.json").read_text(encoding="utf-8")
+    )
+    response = client.post(
         "/flows",
         json={
-            "bpmn": bpmn.replace("'PT10M'", "'PT9M'"),
+            "bpmn": (FIXTURES / "expense_approval.bpmn").read_text(encoding="utf-8"),
             "forms": forms,
-            "lane_owners": {"System Owner": ["reviewer"]},
+            "lane_owners": {"Submitter": ["submitter"]},
         },
         headers=h(ADMIN),
     )
-    assert published.status_code == 201
-    assert published.json()["lane_owners"]["System Owner"] == ["reviewer"]
+    assert response.status_code == 422, response.text
+    assert "Approver" in response.json()["message"]
 
-    instance_id = start(client, "Process_access_request")
-    first = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
-    complete(client, first["id"], {"system": "Production database"})
 
-    # Everybody still sees the owner review, despite the narrowed list.
-    still_visible = [
-        who
-        for who in (SUBMITTER, REVIEWER, ("northwind", "reviewer"))
-        if [
-            t
-            for t in open_tasks(client, who)
-            if t["instance_id"] == instance_id
-        ]
-    ]
-    assert len(still_visible) == 3, still_visible
+def test_publishing_reports_every_problem_at_once(client):
+    response = client.post(
+        "/flows",
+        json={
+            "bpmn": (FIXTURES / "expense_approval.bpmn").read_text(encoding="utf-8"),
+            "forms": {},
+            "lane_owners": {},
+        },
+        headers=h(ADMIN),
+    )
+    assert response.status_code == 422, response.text
+    message = response.json()["message"]
+    assert "form schemas" in message
+    assert "Approver" in message and "Submitter" in message
+
+
+def test_lane_owners_are_per_company(client):
+    """The same lane name in two companies must not share owners."""
+    publish_fixture(
+        client,
+        "expense_approval",
+        tenant="northwind",
+        lanes={"Submitter": ["submitter"], "Approver": ["reviewer"]},
+    )
+    publish_fixture(
+        client,
+        "expense_approval",
+        tenant="initech",
+        lanes={"Submitter": ["submitter"], "Approver": ["editor"]},
+    )
+
+    northwind = client.get("/flows/Process_expense_approval", headers=h(ADMIN)).json()
+    initech = client.get(
+        "/flows/Process_expense_approval",
+        headers=auth_headers(client, "initech", "admin"),
+    ).json()
+    assert northwind["lane_owners"]["Approver"] == ["reviewer"]
+    assert initech["lane_owners"]["Approver"] == ["editor"]

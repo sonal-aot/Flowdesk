@@ -61,7 +61,9 @@ export function Publish({
       const found = await api.inspect(text)
       setReport(found)
       setName(found.name)
-      setOwners(Object.fromEntries(found.lanes.map((lane) => [lane, found.people])))
+      // Deliberately nobody: assigning lanes is the publisher's decision, and a
+      // default of "everyone" is how a workspace ends up with no restrictions.
+      setOwners(Object.fromEntries(found.lanes.map((lane) => [lane, []])))
       setForms(
         Object.fromEntries(
           found.form_files
@@ -83,6 +85,10 @@ export function Publish({
         : [...current, username],
     })
   }
+
+  const lanesNeedingOwners = (report?.lanes ?? []).filter(
+    (lane) => (owners[lane] ?? []).length === 0,
+  )
 
   async function publish() {
     setBusy(true)
@@ -121,7 +127,7 @@ export function Publish({
     <>
       <PageHead
         title="Publish a flow"
-        subtitle={`Upload a BPMN diagram. Anybody in ${me.company} will be able to start it.`}
+        subtitle={`Upload a BPMN diagram. It will be available in ${me.company} only.`}
       />
 
       <Alert severity="warning" sx={{ mb: 2 }}>
@@ -333,11 +339,20 @@ export function Publish({
               <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
                 <Button
                   variant="contained"
-                  disabled={busy || report.problems.length > 0}
+                  disabled={
+                    busy ||
+                    report.problems.length > 0 ||
+                    lanesNeedingOwners.length > 0
+                  }
                   onClick={publish}
                 >
                   {busy ? 'Publishing…' : 'Publish this flow'}
                 </Button>
+                {lanesNeedingOwners.length > 0 && (
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Assign every lane first.
+                  </Typography>
+                )}
                 {done && (
                   <Typography variant="body2" color="success.main">
                     {done}

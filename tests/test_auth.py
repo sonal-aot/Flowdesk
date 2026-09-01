@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import auth_headers, sign_in
+from conftest import auth_headers, publish_fixture, sign_in
 
 NORTHWIND = "northwind"
 ROLES = ["admin", "editor", "reviewer", "submitter"]
@@ -80,6 +80,7 @@ def test_a_token_only_works_for_its_own_company(client):
     ).json()
     assert northwind == [] and initech == []
 
+    publish_fixture(client, "expense_approval", tenant=NORTHWIND)
     started = client.post(
         "/flows/Process_expense_approval/start",
         json={},
@@ -119,6 +120,7 @@ def test_an_editor_publishes_but_does_not_operate(client):
     editor = auth_headers(client, NORTHWIND, "editor")
     assert client.get("/me", headers=editor).json()["library_role"] == "admin"
 
+    publish_fixture(client, "expense_approval", tenant=NORTHWIND)
     instance_id = client.post(
         "/flows/Process_expense_approval/start",
         json={},
@@ -140,6 +142,12 @@ def test_a_submitter_only_sees_their_own_runs(client):
     submitter = auth_headers(client, NORTHWIND, "submitter")
     admin = auth_headers(client, NORTHWIND, "admin")
 
+    publish_fixture(
+        client,
+        "expense_approval",
+        tenant=NORTHWIND,
+        lanes={"Submitter": ["submitter", "admin"], "Approver": ["reviewer"]},
+    )
     mine = client.post(
         "/flows/Process_expense_approval/start", json={}, headers=submitter
     ).json()["id"]

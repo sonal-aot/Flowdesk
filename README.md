@@ -3,10 +3,11 @@
 A workflow console. Designers publish BPMN diagrams; everybody else picks a flow,
 starts it and works through its tasks.
 
-Nothing about any particular flow is compiled in. The console reads what it needs
-out of the diagram — lanes, steps, which form each step wants, which decisions
-and service tasks it calls — and the engine runs whatever it is given. Upload a
-diagram nobody has seen before and it is runnable immediately.
+Nothing about any particular flow is compiled in, and nothing is bundled. The
+console reads what it needs out of the diagram — lanes, steps, which form each
+step wants, which decisions and service tasks it calls — and the engine runs
+whatever it is given. Upload a diagram nobody has seen before and it is runnable
+immediately.
 
 Built on [`m8flow-bpmn-core`](../m8flow-bpmn-core), consumed as a built wheel.
 
@@ -22,8 +23,11 @@ cd frontend && npm install && npm run dev
 ```
 
 Open **http://localhost:5173** and sign in with any account from
-[Signing in](#signing-in) below. Three example flows are published into both
-companies on startup, so there is something to run immediately.
+[Signing in](#signing-in) below.
+
+**The console starts empty.** No flows are bundled — nothing exists until an
+`admin` or `editor` publishes one, and what they publish belongs to their company
+alone. See [Your first flow](#your-first-flow).
 
 | Variable | Default |
 |---|---|
@@ -141,13 +145,44 @@ the company shown in the header — all persisted in localStorage. Task forms us
 `@rjsf/mui`, the same react-jsonschema-form setup m8flow renders its forms with,
 so a schema that works there works here.
 
-## The bundled flows
+## Your first flow
 
-| Flow | Exercises |
+Sign in as `admin` or `editor`, go to **Publish**, and upload a `.bpmn` file. The
+console reads the diagram and shows you what it found; you then assign each lane
+and supply a JSON Schema for any form the diagram names.
+
+Three example diagrams ship with the tests, ready to upload:
+
+| File in `tests/fixtures/` | Exercises |
 |---|---|
-| Expense Approval | DMN decision table, exclusive gateway, script task, service task, two forms |
-| Incident Response | Parallel gateway split and join, three lanes, three forms |
-| Access Request | Interrupting boundary timer escalating to another lane |
+| `expense_approval.bpmn` + `.dmn` | DMN decision table, exclusive gateway, script task, service task, two forms |
+| `incident_response.bpmn` | Parallel gateway split and join, three lanes, three forms |
+| `access_request.bpmn` | Interrupting boundary timer escalating to another lane |
+
+Each has a matching `.forms.json` holding the schemas its steps ask for — paste
+the relevant one into the form boxes on the publish screen.
+
+### Lanes decide who sees what
+
+Every lane must be assigned to at least one person before a flow can be
+published; nothing is pre-selected, and publishing is refused until each lane has
+an owner. Only those people see that step's tasks.
+
+Assignments are **exact**. Republishing with a narrower list genuinely removes
+the people you dropped — which the library does not do on its own, so the app
+reconciles the lane groups itself (FINDINGS #2).
+
+One caveat from how the library models lanes: a lane's group is keyed on the
+lane *name*, so two flows in the same company that both use a lane called
+"Approver" share one set of owners. Give lanes distinct names if two flows need
+different approvers.
+
+### Flows are per company
+
+A published flow exists only in the company that published it. Signing in to
+Initech shows nothing Northwind published, and its ids are not even resolvable
+there — starting one returns 404. Publishing the same diagram in both companies
+gives two independent flows with their own lane owners and their own runs.
 
 ## Service task connectors
 
@@ -174,7 +209,8 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 | `src/flowdesk/bpmn_inspect.py` | Reads lanes, steps, forms, decisions and timers out of a diagram |
 | `src/flowdesk/connectors.py` | The service-task connectors and their registry scope |
 | `src/flowdesk/store.py` | App-owned tables: published files and the activity log |
-| `src/flowdesk/seeds/` | The three bundled flows, with decision table and form schemas |
+| `src/flowdesk/lane_owners.py` | Makes lane membership match exactly what the publisher assigned |
+| `tests/fixtures/` | Example diagrams to upload, with their form schemas |
 | `frontend/src/theme.ts` | MUI theme shaped after m8flow's own |
 | `frontend/src/App.tsx` | App shell: collapsible icon nav, theme switch, user menu |
 | `frontend/src/Login.tsx` | Sign-in |
@@ -184,14 +220,15 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ## Tests
 
 ```bash
-uv run pytest                    # 43 tests
+uv run pytest                    # 47 tests
 cd frontend && npm run build     # type-check and production build
 ```
 
-Covers all three bundled flows end to end — DMN routing both ways, a parallel
+Covers all three example diagrams end to end — DMN routing both ways, a parallel
 join waiting for both branches, a boundary timer actually firing — plus
 publishing a brand-new flow and running it, every permission boundary, lane
-restriction, company isolation, and the login path: wrong passwords, tampered
+assignment actually restricting and narrowing, company isolation, and the login
+path: wrong passwords, tampered
 tokens, expired tokens, the fact that a failed login says the same thing whether
 or not the account exists, and profile editing — including that changing a
 password invalidates other sessions and cannot move you between companies.

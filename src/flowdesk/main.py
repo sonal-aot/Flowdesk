@@ -15,7 +15,6 @@ import contextlib
 import json
 import os
 import time
-from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI
@@ -35,7 +34,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from flowdesk import bpmn_inspect, store
+from flowdesk import bpmn_inspect, lane_owners, store
 from flowdesk.connectors import available_operations, service_tasks
 from flowdesk.db import get_session, init_schema, session_factory
 from flowdesk.errors import register_error_handlers
@@ -55,9 +54,6 @@ from flowdesk.seed import (
     service_url,
     usernames,
 )
-
-SEEDS_DIR = Path(__file__).parent / "seeds"
-
 
 # --------------------------------------------------------------------------- #
 # Bodies
@@ -144,30 +140,42 @@ def publish(
     if flow.errors:
         raise ValidationError(" ".join(flow.errors))
 
+    problems: list[str] = []
+
     missing = [
         name
         for name in flow.form_files
         if name not in body.forms and not name.endswith("uischema.json")
     ]
     if missing:
-        raise ValidationError(
+        problems.append(
             "This diagram asks for form schemas that were not supplied: "
             + ", ".join(missing)
         )
 
-    lane_owners = {
-        lane: body.lane_owners.get(lane) or usernames() for lane in flow.lanes
+    assigned = {
+        lane: sorted(set(body.lane_owners.get(lane) or [])) for lane in flow.lanes
     }
     unknown = sorted(
         {
             person
-            for owners in lane_owners.values()
+            for owners in assigned.values()
             for person in owners
             if person not in ACCOUNTS
         }
     )
     if unknown:
-        raise ValidationError(f"No such people: {', '.join(unknown)}")
+        problems.append(f"No such people: {', '.join(unknown)}")
+
+    unassigned = sorted(lane for lane, owners in assigned.items() if not owners)
+    if unassigned:
+        problems.append(
+            "Every lane needs somebody to pick up its work. Nobody is assigned "
+            f"to: {', '.join(unassigned)}"
+        )
+
+    if problems:
+        raise ValidationError(" ".join(problems))
 
     definition = api.execute_command(
         session,
@@ -179,13 +187,17 @@ def publish(
             source_bpmn_xml=body.bpmn,
             source_dmn_xml=body.dmn,
             properties_json={
-                "lane_owners": lane_owners,
+                "lane_owners": assigned,
                 "display_name": body.name or flow.name,
             },
             created_at_in_seconds=now(),
             updated_at_in_seconds=now(),
         ),
     )
+
+    # The library only ever adds lane members, so make the groups match exactly
+    # what was asked for -- otherwise narrowing a lane silently does nothing.
+    lane_owners.apply(session, tenant_id=tenant_id, lane_owners=assigned)
 
     store.save_asset(
         session,
@@ -222,40 +234,11 @@ async def lifespan(_app: FastAPI):
     session = session_factory()()
     try:
         seed(session)
-        install_seed_flows(session)
         session.commit()
     finally:
         session.close()
     async with scheduler_running():
         yield
-
-
-def install_seed_flows(session: Session) -> None:
-    """Publish the bundled example flows so the console is not empty on day one."""
-    for tenant_id in TENANTS:
-        publisher = session.scalar(
-            select(UserModel).where(
-                UserModel.service == service_url(tenant_id),
-                UserModel.service_id == "admin",
-            )
-        )
-        if publisher is None:  # pragma: no cover - seeding guarantees this
-            continue
-        for bpmn_path in sorted(SEEDS_DIR.glob("*.bpmn")):
-            dmn_path = bpmn_path.with_suffix(".dmn")
-            forms_path = bpmn_path.with_suffix(".forms.json")
-            body = PublishIn(
-                bpmn=bpmn_path.read_text(encoding="utf-8"),
-                dmn=dmn_path.read_text(encoding="utf-8") if dmn_path.exists() else None,
-                forms=(
-                    json.loads(forms_path.read_text(encoding="utf-8"))
-                    if forms_path.exists()
-                    else {}
-                ),
-            )
-            publish(
-                session, tenant_id=tenant_id, actor_user_id=publisher.id, body=body
-            )
 
 
 app = FastAPI(title="Flowdesk", version="1.0.0", lifespan=lifespan)
@@ -315,15 +298,31 @@ def newest_definition(
     return found[0]
 
 
-def flow_summary(definition: BpmnProcessDefinitionModel) -> dict[str, Any]:
+def flow_summary(
+    definition: BpmnProcessDefinitionModel,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    """A flow as the console shows it.
+
+    When a session is given, lane owners are read back from the groups that
+    actually decide assignment rather than from what was recorded at publish
+    time -- so the screen cannot disagree with reality.
+    """
     properties = definition.properties_json or {}
     flow = bpmn_inspect.inspect(definition.source_bpmn_xml or "")
+    owners = properties.get("lane_owners") or {}
+    if session is not None and flow.lanes:
+        owners = lane_owners.current(
+            session,
+            tenant_id=definition.m8f_tenant_id,
+            lane_names=list(flow.lanes),
+        )
     return {
         "process_id": definition.bpmn_identifier,
         "name": properties.get("display_name") or definition.bpmn_name or flow.name,
         "version_id": definition.id,
         "lanes": list(flow.lanes),
-        "lane_owners": properties.get("lane_owners") or {},
+        "lane_owners": owners,
         "steps": [
             {"name": task.name, "lane": task.lane, "has_form": bool(task.form_schema)}
             for task in flow.user_tasks
@@ -534,7 +533,7 @@ def publish_flow(
         body=body,
     )
     session.flush()
-    return flow_summary(definition)
+    return flow_summary(definition, session)
 
 
 @app.get("/flows")
@@ -547,7 +546,7 @@ def list_flows(
         if definition.bpmn_identifier in seen:
             seen[definition.bpmn_identifier]["versions"] += 1
             continue
-        summary = flow_summary(definition)
+        summary = flow_summary(definition, session)
         summary["versions"] = 1
         seen[definition.bpmn_identifier] = summary
     return sorted(seen.values(), key=lambda row: row["name"].lower())
@@ -560,7 +559,7 @@ def get_flow(
     session: Session = SessionDep,
 ) -> dict[str, Any]:
     definition = newest_definition(session, caller.tenant_id, process_id)
-    summary = flow_summary(definition)
+    summary = flow_summary(definition, session)
     summary["versions"] = [
         {"version_id": row.id, "published_at": row.created_at_in_seconds}
         for row in definitions_for(session, caller.tenant_id, process_id)

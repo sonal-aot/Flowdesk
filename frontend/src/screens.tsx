@@ -135,7 +135,12 @@ export function Flows({
             : `${rows.length} flow${rows.length === 1 ? '' : 's'} published here`
         }
       />
-      {rows?.length === 0 && <Empty>No flows are published yet.</Empty>}
+      {rows?.length === 0 && (
+        <Empty>
+          No flows have been published in this company yet. An admin or editor
+          can add one from Publish.
+        </Empty>
+      )}
 
       <Stack spacing={1.5}>
         {(rows ?? []).map((flow) => (

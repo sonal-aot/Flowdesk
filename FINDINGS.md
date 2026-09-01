@@ -53,20 +53,35 @@ fix.
 
 ## 2. Lane ownership can be widened but never revoked — *high*
 
-Publishing a new version with a **narrower** lane-owner list does not take anybody
-off the lane. The bundled flows are published with every account owning every
-lane; republishing with `{"System Owner": ["reviewer"]}` left all four accounts
-still able to see and claim that lane's task.
+`_sync_lane_owner_group_assignments` only ever adds. Publishing a new version
+with a **narrower** lane-owner list does not take anybody off the lane, so a host
+cannot remove a leaver, or correct an over-permissive first publish, by
+republishing.
 
-So a host cannot remove a leaver from a lane, or correct an over-permissive first
-publish, by republishing. The only route is reaching into
-`user_group_assignment` directly.
+There is no public API for group membership, so the app now reconciles the
+library's own `user_group_assignment` rows itself: after every import it makes
+each lane's membership exactly the set that was named, adding what is missing and
+deleting what is not. It only touches rows for users of the publishing tenant.
 
-**Suggestion:** make `_sync_lane_owner_group_assignments` reconcile — remove
-assignments no longer named — or expose a public command for lane membership so
-hosts are not editing library tables.
+Two details of the lane model that made this delicate:
 
-*Evidence:* `tests/test_flows.py::test_republishing_does_not_revoke_a_lane`
+* **A lane's group id is a hash of the lane name alone** —
+  `resolve_lane_assignment_id` — so the group is global. A lane called "Approver"
+  is one group shared by every company *and* by every flow that uses that name.
+  Two flows in one company with the same lane name therefore cannot have
+  different owners.
+* Task assignment intersects that group with the tenant's own users
+  (`_users_in_lane_group` filters by tenant), so work never actually crosses
+  companies. The global group is a modelling smell rather than a leak — but it is
+  why the reconciliation has to be careful to delete only its own tenant's rows.
+
+**Suggestion:** make the sync reconcile, scope lane groups per tenant (and
+ideally per process model), and expose lane membership through a public command
+so hosts are not editing library tables to do something this routine.
+
+*Evidence:* `src/flowdesk/lane_owners.py`;
+`tests/test_flows.py::test_republishing_narrows_a_lane`,
+`::test_lane_owners_are_per_company`
 
 ---
 
