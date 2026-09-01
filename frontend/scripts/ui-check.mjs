@@ -90,6 +90,13 @@ log.push(`${drawers > 0 ? 'PASS' : 'FAIL'}  drawer opened (found ${drawers})`)
 if (drawers > 0) {
   const text = await detail.innerText()
   log.push('drawer text: ' + text.replace(/\n/g, ' | ').slice(0, 400))
+  // Is the close button actually reachable, or hidden under the app bar?
+  const closeBtn = detail.getByRole('button').first()
+  const cb = await closeBtn.boundingBox()
+  const bar = await page.locator('header').boundingBox()
+  log.push(
+    `${cb && cb.y >= bar.height - 2 ? 'PASS' : 'FAIL'}  drawer close button clear of the app bar — button y=${cb ? Math.round(cb.y) : 'none'}, app bar height=${Math.round(bar.height)}`,
+  )
   await detail.screenshot({ path: `${OUT}/6-drawer.png` })
 } else {
   log.push('body text after click: ' + (await page.locator('main').innerText()).replace(/\n/g, ' | ').slice(0, 300))

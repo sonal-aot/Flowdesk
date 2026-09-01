@@ -20,6 +20,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Toolbar,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -539,7 +540,11 @@ export function Runs({
       )}
 
       <Drawer anchor="right" open={open !== null} onClose={() => setOpen(null)}>
-        <Box sx={{ width: { xs: '100vw', sm: 420 }, p: 3 }}>
+        <Box sx={{ width: { xs: '100vw', sm: 420 } }}>
+          {/* The app bar is fixed and sits above the drawer, so leave room for
+              it or the header and close button end up underneath. */}
+          <Toolbar variant="dense" sx={{ minHeight: 56 }} />
+          <Box sx={{ p: 3, pt: 1 }}>
           {open && (
             <>
               <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
@@ -623,6 +628,14 @@ export function Runs({
                 ))}
               </Section>
 
+              {!me.can_operate && (
+                <Section title="Operate">
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Holding, cancelling or retrying a run needs the admin role.
+                    You are signed in as {me.role}.
+                  </Typography>
+                </Section>
+              )}
               {me.can_operate && (
                 <Section title="Operate">
                   {open.allowed_actions.length === 0 ? (
@@ -662,6 +675,7 @@ export function Runs({
               )}
             </>
           )}
+          </Box>
         </Box>
       </Drawer>
     </>
