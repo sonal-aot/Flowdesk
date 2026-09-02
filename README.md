@@ -13,6 +13,26 @@ Built on [`m8flow-bpmn-core`](../m8flow-bpmn-core), consumed as a built wheel.
 
 ## Running it
 
+### With Docker
+
+One container: the frontend is built into static files and served by the API, so
+there is one port, no CORS and no API base URL to set.
+
+```bash
+./scripts/refresh_wheel.sh      # vendor/*.whl is gitignored; build it first
+docker compose up --build
+```
+
+Open **http://localhost:8020** and sign in as `admin` / `admin`.
+
+The database lives on a named volume, so it survives `docker compose down`. To
+start from nothing: `docker compose down -v`.
+
+**Change `FLOWDESK_SECRET_KEY` in `docker-compose.yml` before this is reachable
+by anyone else** — session tokens are signed with it.
+
+### From source
+
 ```bash
 # backend on :8020
 uv sync
@@ -35,7 +55,10 @@ alone. See [Your first flow](#your-first-flow).
 | `FLOWDESK_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` |
 | `FLOWDESK_SECRET_KEY` | `flowdesk-development-secret` — signs session tokens |
 | `FLOWDESK_SESSION_HOURS` | `12` |
-| `VITE_API_BASE` | `http://127.0.0.1:8020` |
+| `VITE_API_BASE` | `http://127.0.0.1:8020` — build-time; empty means same-origin |
+| `FLOWDESK_HOST` | `127.0.0.1` — the container sets `0.0.0.0` |
+| `FLOWDESK_PORT` | `8020` |
+| `FLOWDESK_STATIC_DIR` | unset — set it to a built `frontend/dist` to serve the console from the API |
 
 Starting over: stop the backend, delete `flowdesk.db`, start again.
 
@@ -282,10 +305,13 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 ## Tests
 
 ```bash
-uv run pytest                    # 53 tests
+uv run pytest                    # 67 tests
 cd frontend && npm run build     # type-check and production build
 cd frontend && node scripts/ui-check.mjs   # drives the real UI in a browser
 ```
+
+Use `npm run build`, not `tsc --noEmit`: the build runs `tsc -b`, which is
+stricter about JSX, and has caught a type error the flat check waved through.
 
 The last one needs both servers running. It signs in, opens a task form, checks
 the dialog is actually centred, clicks a Runs row and asserts the detail panel

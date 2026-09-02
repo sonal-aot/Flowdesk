@@ -1,0 +1,22 @@
+# docker compose up --build
+#
+# Then open http://localhost:8020 and sign in as admin / admin.
+services:
+  flowdesk:
+    build: .
+    ports:
+      - "8020:8020"
+    volumes:
+      # The database outlives the container. Delete the volume to start over:
+      #   docker compose down -v
+      - flowdesk-data:/data
+    environment:
+      # Same origin, so nothing cross-origin has to be allowed.
+      FLOWDESK_CORS_ORIGINS: ""
+      # Change this. Tokens are signed with it, so the default lets anyone who
+      # knows it mint a session.
+      FLOWDESK_SECRET_KEY: "change-me-before-anyone-else-can-reach-this"
+    restart: unless-stopped
+
+volumes:
+  flowdesk-data:

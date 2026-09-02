@@ -701,7 +701,11 @@ export function Runs({
                       {Object.entries(open.data).map(([key, value]) => (
                         <TableRow key={key}>
                           <TableCell sx={{ color: 'text.secondary' }}>{key}</TableCell>
-                          <TableCell>{value}</TableCell>
+                          <TableCell
+                            sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+                          >
+                            {asText(value)}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

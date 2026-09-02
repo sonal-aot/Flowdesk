@@ -1,0 +1,16 @@
+# Anything the image builds for itself, or must never contain.
+.venv/
+.uv-cache/
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+.git/
+.gitignore
+frontend/node_modules/
+frontend/dist/
+frontend/ui-shots/
+tests/
+scripts/
+*.md
+!examples/README.md

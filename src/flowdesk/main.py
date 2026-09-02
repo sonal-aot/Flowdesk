@@ -20,6 +20,7 @@ from typing import Any
 import jinja2
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from m8flow_bpmn_core import api
 from m8flow_bpmn_core.errors import (
     AuthorizationError,
@@ -1424,7 +1425,25 @@ def activity(
     ]
 
 
+# The built frontend, if there is one. Mounted last so every API route above
+# wins; `html=True` serves index.html at `/`, which is all the console needs --
+# it has no client-side routing, only state.
+STATIC_DIR = os.environ.get("FLOWDESK_STATIC_DIR", "")
+if STATIC_DIR and os.path.isdir(STATIC_DIR):
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="app")
+
+
 def run() -> None:
+    """Serve the app.
+
+    Loopback by default, because a development server has no business on a
+    network interface. In a container there is no loopback worth binding to, so
+    FLOWDESK_HOST is how the compose file says 0.0.0.0.
+    """
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8020)
+    uvicorn.run(
+        app,
+        host=os.environ.get("FLOWDESK_HOST", "127.0.0.1"),
+        port=int(os.environ.get("FLOWDESK_PORT", "8020")),
+    )
