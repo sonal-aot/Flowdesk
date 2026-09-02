@@ -139,7 +139,7 @@ def test_expense_over_the_threshold_needs_an_approver(client):
     assert result["instance_status"] == "complete"
 
     detail = instance(client, instance_id)
-    assert detail["data"]["amount"] == "250"
+    assert detail["data"]["amount"] == 250
     assert detail["data"]["decision"] == "approved"
     # The service task ran and was logged.
     assert [call["operation_id"] for call in detail["activity"]] == ["log/Write"]
@@ -156,12 +156,13 @@ def test_expense_within_policy_skips_the_approver(client):
     # The decision table routed past the approver and the script task decided.
     assert result["instance_status"] == "complete"
     detail = instance(client, instance_id)
-    assert [step["name"] for step in detail["progress"]] == [
+    person_steps = [step for step in detail["progress"] if step["kind"] == "person"]
+    assert [step["name"] for step in person_steps] == [
         "Submit Expense Claim",
         "Approve Expense Claim",
     ]
     # The approver step was never needed: the decision table routed past it.
-    assert [step["state"] for step in detail["progress"]] == ["done", "not_needed"]
+    assert [step["state"] for step in person_steps] == ["done", "not_needed"]
     assert detail["activity"][0]["outcome"] == "ok"
 
 
@@ -606,11 +607,19 @@ def test_one_person_fills_a_form_then_another_decides(client):
 
         detail = instance(client, instance_id)
         assert detail["data"]["decision"] == verdict
-        assert [step["name"] for step in detail["progress"]] == [
+        person_steps = [s for s in detail["progress"] if s["kind"] == "person"]
+        assert [step["name"] for step in person_steps] == [
             "Submit Request",
             "Review Request",
         ]
-        assert all(step["state"] == "done" for step in detail["progress"])
+        assert all(step["state"] == "done" for step in person_steps)
+        # The branch not taken is shown as such rather than left out.
+        ends = {s["name"]: s["state"] for s in detail["progress"] if s["kind"] == "end"}
+        assert ends == (
+            {"Approved": "done", "Rejected": "not_needed"}
+            if verdict == "approved"
+            else {"Approved": "not_needed", "Rejected": "done"}
+        )
 
 
 def test_a_run_shows_its_whole_shape_and_who_is_next(client):
@@ -619,13 +628,18 @@ def test_a_run_shows_its_whole_shape_and_who_is_next(client):
     instance_id = start(client, "Process_two_step_request")
 
     detail = instance(client, instance_id)
-    # Both steps are listed, including the one nobody has reached yet.
-    assert [(s["name"], s["state"]) for s in detail["progress"]] == [
-        ("Submit Request", "waiting"),
-        ("Review Request", "upcoming"),
+    # Every step is listed in the order a run reaches them, including the ones
+    # nobody has got to yet.
+    assert [(s["name"], s["kind"], s["state"]) for s in detail["progress"]] == [
+        ("Request raised", "start", "done"),
+        ("Submit Request", "person", "waiting"),
+        ("Review Request", "person", "upcoming"),
+        ("Approved?", "branch", "upcoming"),
+        ("Approved", "end", "upcoming"),
+        ("Rejected", "end", "upcoming"),
     ]
     # And the waiting step names the actual person, with why they have it.
-    first = detail["progress"][0]
+    first = next(s for s in detail["progress"] if s["kind"] == "person")
     assert [p["name"] for p in first["people"]] == ["Sam Submitter"]
     assert first["people"][0]["why"] == "owns this lane"
     assert detail["next_action"] == "Waiting on Submit Request — Sam Submitter"
@@ -634,12 +648,15 @@ def test_a_run_shows_its_whole_shape_and_who_is_next(client):
     complete(client, submit_task["id"], {"subject": "Chair", "details": "Broken"})
 
     detail = instance(client, instance_id)
-    assert [(s["name"], s["state"]) for s in detail["progress"]] == [
+    assert [
+        (s["name"], s["state"]) for s in detail["progress"] if s["kind"] == "person"
+    ] == [
         ("Submit Request", "done"),
         ("Review Request", "waiting"),
     ]
-    assert detail["progress"][0]["by"] == "Sam Submitter"
-    assert detail["progress"][0]["at"]
+    submitted = next(s for s in detail["progress"] if s["name"] == "Submit Request")
+    assert submitted["by"] == "Sam Submitter"
+    assert submitted["at"]
     assert detail["next_action"] == "Waiting on Review Request — Riya Reviewer"
 
     # The list view carries the same answer without opening anything.
@@ -744,3 +761,32 @@ def test_a_cancelled_run_offers_nothing_either(client):
     assert detail["status"] == "terminated"
     assert detail["allowed_actions"] == []
     assert detail["no_actions_reason"].startswith("This run was cancelled")
+
+
+def test_the_trace_shows_steps_no_person_ever_touches(client):
+    """A run's shape is more than its user tasks.
+
+    The engine keeps a row for every step it ran, so a service task, a decision
+    and the gateway that routed past a step all show up -- which matters most for
+    a flow with no user tasks at all, where the human tasks say nothing.
+    """
+    publish_fixture(client, "expense_approval")
+    instance_id = start(client, "Process_expense_approval")
+    submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(
+        client,
+        submit["id"],
+        {"amount": 250, "purpose": "Conference", "cost_centre": "ENG"},
+    )
+    approve = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
+    complete(
+        client, approve["id"], {"decision": "approved", "approver_note": "Fine"}, REVIEWER
+    )
+
+    progress = instance(client, instance_id)["progress"]
+    kinds = {step["kind"] for step in progress}
+    assert {"service", "decision"} <= kinds, kinds
+    service = next(step for step in progress if step["kind"] == "service")
+    assert service["state"] == "done"

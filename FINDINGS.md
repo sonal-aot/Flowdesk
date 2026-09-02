@@ -189,30 +189,68 @@ document the four preconditions in `doc/api.md`.
 
 ---
 
-## 9. A run's future is invisible; only its past is queryable — *medium*
+## 9. A run's whole shape is recorded, and no query returns it — *medium*
 
-"Where has this got to, and who owes the next move" is the first question anybody
-asks about a running process. The second half the library answers well:
-`human_task_user` records exactly which people may act on an open task and why
-(`lane_owner`, `lane_assignment`, `process_initiator`, `manual`), which is more
-than most engines expose.
+**Corrects an earlier reading of this finding.** The first version said a run's
+future steps did not exist in the database. They do. `task` holds a row for every
+step of a run from the moment it starts, joined to `task_definition` for the
+element id, name and type, and its `state` column is SpiffWorkflow's own:
+`COMPLETED`, `READY`, `FUTURE`, `MAYBE`, `TERMINATED`. That is a complete and
+authoritative answer to "where has this got to", including steps not yet reached
+and branches that will never be taken.
 
-The first half it cannot answer at all. A task exists only once control reaches
-it, so a run sitting at step 1 of 4 has one row and no notion of the other three.
-There is no query for "the steps of this definition" either (#4), so a host that
-wants a progress view has to parse the diagram itself and match it against the
-tasks that exist. Distinguishing "not reached yet" from "skipped down another
-branch" then needs the instance status as well.
+What is missing is any way to *ask* for it. No query in `api` returns tasks —
+`GetPendingTasksQuery` returns only open human tasks — so a host that wants a
+progress view has to import `TaskModel` and `TaskDefinitionModel` and query them
+itself, which is exactly what this app now does.
 
+Two things a caller still has to supply:
+
+* **Order.** `task` records what ran, not where it sits in the diagram, and
+  `start_in_seconds` is the same value for every step of a fast run. Reading the
+  diagram's sequence flows is the only way to put the steps in the order a person
+  would recognise (`bpmn_inspect._in_run_order`).
+* **"Never happened" vs "not yet".** On a finished run, a branch that was not
+  taken is often still `MAYBE`, not `TERMINATED`, so the run's status has to be
+  overlaid on the step's state.
+
+The related half the library answers well: `human_task_user` records exactly
+which people may act on an open task and why (`lane_owner`, `lane_assignment`,
+`process_initiator`, `manual`), which is more than most engines expose.
 `human_task_user.added_by` deserves a mention in `doc/api.md` — it is the single
-most useful field for a worklist UI and is not documented anywhere.
+most useful field for a worklist UI and is documented nowhere.
 
-**Suggestion:** a read query returning a definition's task specs, so a host can
-line up progress without a second BPMN parser. The information is already in the
-parsed spec the runtime holds.
+**Suggestion:** a read query returning a run's steps with their states, and a
+definition's task specs (#4). Both are already in the tables; only the door is
+missing.
 
-*Evidence:* `src/flowdesk/main.py`, `progress_for`;
-`tests/test_flows.py::test_a_run_shows_its_whole_shape_and_who_is_next`
+*Evidence:* `src/flowdesk/main.py`, `engine_states` and `progress_for`;
+`tests/test_flows.py::test_the_trace_shows_steps_no_person_ever_touches`
+
+---
+
+## 11. A run's own data is not reachable through any query — *medium*
+
+`GetProcessInstanceMetadataQuery` sounds like "the data this run collected". It
+is not: it returns only what a host has itself written to
+`process_instance_metadata`, and every value is a string. Anything the *flow*
+produced is invisible through it.
+
+A service task is the clear case. The engine puts its response into the workflow
+data as `spiff__<elementId>_result`, and it lands in the `json_data` row hanging
+off `bpmn_process` — alongside `__m8f_workflow_state_json`, the serialiser's own
+blob. A flow whose only step is an HTTP call therefore reports no data at all
+through the public API, while the response sits in the database in full.
+
+Reading it means importing `BpmnProcessModel` and `JsonDataModel` and knowing to
+drop the serialiser key, which is not documented and is not obviously stable.
+
+**Suggestion:** a query returning a run's workflow data, with the serialiser's
+internals excluded. Typed values, not the stringified metadata.
+
+*Evidence:* `src/flowdesk/main.py`, `workflow_data`; run of a service-task-only
+flow, whose 4KB HTTP response reached the UI only after reading `json_data`
+directly
 
 ---
 
@@ -282,7 +320,9 @@ particular to one app:
    the publish permission means.
 2. Make lane ownership revocable (#2).
 3. Populate `form_file_name` (#3), or remove the columns.
-4. Add the four read queries a console needs (#4).
+4. Add the read queries a console needs: what is published (#4), a run's steps
+   and their states (#9), and a run's own data (#11). All three are already in
+   the tables; a host has to import the ORM models to reach them.
 5. Make roles composable so a host can express its own (#7).
 6. Add a safe user-update command (#8).
 7. Publish the lifecycle preconditions (#10).

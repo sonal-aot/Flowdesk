@@ -25,6 +25,7 @@ import {
 } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import CloseIcon from '@mui/icons-material/Close'
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutlineOutlined'
 import HourglassTopIcon from '@mui/icons-material/HourglassTop'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 import DoNotDisturbAltIcon from '@mui/icons-material/DoNotDisturbAlt'
@@ -173,6 +174,12 @@ export function Flows({
                 )}
               </Stack>
 
+              {flow.steps.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5, mb: 1.5 }}>
+                  No step in this flow waits for a person, so it runs start to
+                  finish the moment it is started.
+                </Typography>
+              ) : (
               <Table size="small" sx={{ mt: 1.5, mb: 1.5 }}>
                 <TableBody>
                   {flow.steps.map((step, index) => (
@@ -191,6 +198,7 @@ export function Flows({
                   ))}
                 </TableBody>
               </Table>
+              )}
 
               <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: "wrap" }}>
                 {flow.lanes.map((lane) => (
@@ -371,7 +379,9 @@ export function Work({
                       {Object.entries(open.known_data).map(([key, value]) => (
                         <TableRow key={key}>
                           <TableCell sx={{ color: 'text.secondary' }}>{key}</TableCell>
-                          <TableCell>{value}</TableCell>
+                          <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {asText(value)}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -714,6 +724,65 @@ const STEP_LOOK: Record<
     color: 'text.disabled',
     note: 'not needed — the run went another way',
   },
+  error: {
+    icon: <ErrorOutlineIcon fontSize="small" color="error" />,
+    color: 'error.main',
+    note: 'failed here',
+  },
+}
+
+/** What each kind of step is, said plainly. A person step needs no label. */
+const KIND_NOTE: Partial<Record<ProgressStep['kind'], string>> = {
+  service: 'called a service',
+  script: 'ran automatically',
+  decision: 'decision table',
+  subflow: 'sub-flow',
+  branch: 'branch',
+  wait: 'waited',
+  boundary: 'timer',
+  start: 'start',
+  end: 'end',
+}
+
+/** Anything a step or a run collected, as text. */
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+}
+
+const MAX_SHOWN = 4000
+
+/** What a step produced. A service task's response can be enormous, so it stays
+ *  folded away until somebody asks for it. */
+function StepData({ value }: { value: unknown }) {
+  const text = asText(value)
+  return (
+    <Box component="details" sx={{ mt: 0.75 }}>
+      <Box
+        component="summary"
+        sx={{ cursor: 'pointer', fontSize: 12, color: 'text.secondary' }}
+      >
+        what it returned ({text.length.toLocaleString()} characters)
+      </Box>
+      <Box
+        component="pre"
+        sx={{
+          mt: 0.5,
+          mb: 0,
+          p: 1,
+          maxHeight: 260,
+          overflow: 'auto',
+          bgcolor: 'action.hover',
+          borderRadius: 1,
+          fontSize: 11,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {text.slice(0, MAX_SHOWN)}
+        {text.length > MAX_SHOWN ? '\n… truncated' : ''}
+      </Box>
+    </Box>
+  )
 }
 
 /** One step of the flow: where it is, who did it or who owes it. */
@@ -744,11 +813,21 @@ function StepLine({ step, last }: { step: ProgressStep; last: boolean }) {
           {step.name}
         </Typography>
         <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
-          {step.lane ? `${step.lane} · ` : ''}
-          {step.state === 'done'
-            ? `done by ${step.by}${step.at ? ` · ${step.at}` : ''}`
-            : look.note}
+          {[
+            KIND_NOTE[step.kind],
+            step.lane,
+            step.state === 'done'
+              ? step.by
+                ? `done by ${step.by}${step.at ? ` · ${step.at}` : ''}`
+                : `done${step.at ? ` · ${step.at}` : ''}`
+              : look.note,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </Typography>
+        {step.data !== null && step.data !== undefined && (
+          <StepData value={step.data} />
+        )}
         {step.state === 'waiting' && (
           <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap' }} useFlexGap>
             {step.people.length > 0 ? (

@@ -35,12 +35,58 @@ class UserTask:
     form_ui_schema: str | None
 
 
+#: Every flow node worth showing in a run's trace, and what to call its kind.
+#: Sequence flows, lanes and data objects are not steps, so they are absent.
+STEP_KINDS: dict[str, str] = {
+    "userTask": "person",
+    "manualTask": "person",
+    "serviceTask": "service",
+    "scriptTask": "script",
+    "businessRuleTask": "decision",
+    "callActivity": "subflow",
+    "subProcess": "subflow",
+    "sendTask": "service",
+    "receiveTask": "wait",
+    "task": "task",
+    "startEvent": "start",
+    "endEvent": "end",
+    "intermediateCatchEvent": "wait",
+    "intermediateThrowEvent": "event",
+    "boundaryEvent": "boundary",
+    "exclusiveGateway": "branch",
+    "parallelGateway": "branch",
+    "inclusiveGateway": "branch",
+    "eventBasedGateway": "branch",
+}
+
+#: What to call an unnamed node, rather than dressing up its element id.
+UNNAMED: dict[str, str] = {
+    "start": "Start",
+    "end": "End",
+    "branch": "Branch",
+    "wait": "Wait",
+    "boundary": "Timer",
+    "event": "Event",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    """One node of the diagram, in the order it is written."""
+
+    element_id: str
+    name: str
+    kind: str
+    lane: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class Flow:
     process_id: str
     name: str
     lanes: tuple[str, ...]
     user_tasks: tuple[UserTask, ...]
+    steps: tuple[Step, ...]
     decisions: tuple[str, ...]
     service_operations: tuple[str, ...]
     timers: tuple[str, ...]
@@ -82,6 +128,41 @@ def _lane_of(element_id: str, lanes: dict[str, list[str]]) -> str | None:
         if element_id in refs:
             return lane_name
     return None
+
+
+def _in_run_order(steps: list[Step], process) -> list[Step]:
+    """Order the nodes the way a run reaches them, following the sequence flows.
+
+    Breadth-first from the start events. A node no arrow reaches -- an orphan, or
+    a diagram we did not understand -- keeps its place at the end, so nothing is
+    ever dropped just because the graph was odd.
+    """
+    outgoing: dict[str, list[str]] = {}
+    for flow in process.findall(f"{BPMN}sequenceFlow"):
+        source, target = flow.get("sourceRef"), flow.get("targetRef")
+        if source and target:
+            outgoing.setdefault(source, []).append(target)
+    # A boundary event has no incoming arrow; it hangs off the step it interrupts.
+    for element in process:
+        host = element.get("attachedToRef")
+        if host and element.get("id"):
+            outgoing.setdefault(host, []).append(element.get("id", ""))
+
+    by_id = {step.element_id: step for step in steps}
+    queue = [step.element_id for step in steps if step.kind == "start"]
+    seen: set[str] = set()
+    order: list[Step] = []
+    while queue:
+        node = queue.pop(0)
+        if node in seen:
+            continue
+        seen.add(node)
+        if node in by_id:
+            order.append(by_id[node])
+        queue.extend(outgoing.get(node, []))
+
+    order.extend(step for step in steps if step.element_id not in seen)
+    return order
 
 
 def inspect(bpmn_xml: str) -> Flow:
@@ -127,6 +208,25 @@ def inspect(bpmn_xml: str) -> Flow:
                     form_ui_schema=props.get(FORM_UI_PROPERTY) or None,
                 )
             )
+
+    # A modeller writes elements in whatever order they drew them, so document
+    # order is not the order a run goes through them. Follow the arrows instead.
+    steps: list[Step] = []
+    for element in process:
+        kind = STEP_KINDS.get(element.tag.removeprefix(BPMN))
+        element_id = element.get("id") or ""
+        if kind is None or not element_id:
+            continue
+        steps.append(
+            Step(
+                element_id=element_id,
+                name=element.get("name") or UNNAMED.get(kind) or _readable(element_id),
+                kind=kind,
+                lane=_lane_of(element_id, lanes),
+            )
+        )
+
+    steps = _in_run_order(steps, process)
 
     decisions = [
         node.text.strip()
@@ -176,6 +276,7 @@ def inspect(bpmn_xml: str) -> Flow:
         name=name,
         lanes=tuple(lanes),
         user_tasks=tuple(user_tasks),
+        steps=tuple(steps),
         decisions=tuple(dict.fromkeys(decisions)),
         service_operations=tuple(dict.fromkeys(service_operations)),
         timers=tuple(timers),

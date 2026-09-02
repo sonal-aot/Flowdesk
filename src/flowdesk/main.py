@@ -26,9 +26,14 @@ from m8flow_bpmn_core.errors import (
     NotFoundError,
     ValidationError,
 )
+from m8flow_bpmn_core.models.bpmn_process import BpmnProcessModel
 from m8flow_bpmn_core.models.bpmn_process_definition import (
     BpmnProcessDefinitionModel,
 )
+from m8flow_bpmn_core.models.json_data import JsonDataModel
+from m8flow_bpmn_core.models.process_instance import WORKFLOW_STATE_JSON_DATA_KEY
+from m8flow_bpmn_core.models.task import TaskModel
+from m8flow_bpmn_core.models.task_definition import TaskDefinitionModel
 from m8flow_bpmn_core.models.human_task import HumanTaskModel
 from m8flow_bpmn_core.models.process_instance import ProcessInstanceModel
 from m8flow_bpmn_core.models.human_task_user import HumanTaskUserModel
@@ -724,15 +729,7 @@ def get_instance(
         pending,
         assignees_by_task(session, caller.tenant_id, directory),
     )
-    row["data"] = {
-        item.key: item.value
-        for item in api.execute_query(
-            session,
-            api.GetProcessInstanceMetadataQuery(
-                tenant_id=caller.tenant_id, process_instance_id=instance_id
-            ),
-        )
-    }
+    run_data = workflow_data(session, instance)
     row["events"] = [
         {
             "event": str(event.event_type),
@@ -753,7 +750,14 @@ def get_instance(
         tenant_id=caller.tenant_id,
         instance=instance,
         directory=directory,
+        data=run_data,
     )
+    # A service task's result is shown on its own step, so it is not repeated here.
+    row["data"] = {
+        key: value
+        for key, value in run_data.items()
+        if not (key.startswith("spiff__") and key.endswith("_result"))
+    }
     row["next_action"] = next_action_line(row["progress"], str(instance.status))
     row["allowed_actions"] = allowed_actions(instance)
     row["no_actions_reason"] = (
@@ -826,86 +830,150 @@ WHY_ASSIGNED = {
 }
 
 
+#: SpiffWorkflow's task states, in this app's four words. The engine records a
+#: row for every step of a run -- including ones it has not reached (FUTURE) and
+#: branches it will never take (TERMINATED) -- so the state is read, not guessed.
+STEP_STATE: dict[str, str] = {
+    "COMPLETED": "done",
+    "READY": "waiting",
+    "STARTED": "waiting",
+    "WAITING": "waiting",
+    "FUTURE": "upcoming",
+    "LIKELY": "upcoming",
+    "MAYBE": "upcoming",
+    "TERMINATED": "not_needed",
+    "CANCELLED": "not_needed",
+    "ERROR": "error",
+}
+
+
+def _step_state(engine_state: str, *, finished: bool) -> str:
+    state = STEP_STATE.get(engine_state, "upcoming")
+    return "not_needed" if finished and state == "upcoming" else state
+
+
+def service_result_key(element_id: str) -> str:
+    """Where SpiffWorkflow puts a service task's return value."""
+    return f"spiff__{element_id}_result"
+
+
+def workflow_data(session: Session, instance: Any) -> dict[str, Any]:
+    """Everything the run itself has collected.
+
+    No query reaches this. `GetProcessInstanceMetadataQuery` returns only what an
+    app has written to metadata, so a service task's response -- which the engine
+    puts straight into the workflow data -- is invisible through it. The real
+    thing hangs off the bpmn_process row. See FINDINGS.
+    """
+    process = session.get(BpmnProcessModel, instance.bpmn_process_id)
+    row = session.get(JsonDataModel, process.json_data_hash) if process else None
+    data = dict(row.data) if row is not None and isinstance(row.data, dict) else {}
+    data.pop(WORKFLOW_STATE_JSON_DATA_KEY, None)  # the serialiser's own blob
+    return data
+
+
+def engine_states(
+    session: Session, *, tenant_id: str, instance_id: int
+) -> dict[str, tuple[str, float | None]]:
+    """Every step this run has a record for, by element id, with its state."""
+    found: dict[str, tuple[str, float | None]] = {}
+    for identifier, state, ended, started in session.execute(
+        select(
+            TaskDefinitionModel.bpmn_identifier,
+            TaskModel.state,
+            TaskModel.end_in_seconds,
+            TaskModel.start_in_seconds,
+        )
+        .join(TaskModel, TaskModel.task_definition_id == TaskDefinitionModel.id)
+        .where(
+            TaskModel.m8f_tenant_id == tenant_id,
+            TaskModel.process_instance_id == instance_id,
+        )
+    ).all():
+        # A step inside a loop has a row per pass; the furthest one is the answer.
+        previous = found.get(identifier)
+        if previous is None or STEP_STATE.get(state) == "done":
+            found[identifier] = (state, float(ended or started or 0) or None)
+    return found
+
+
 def progress_for(
     session: Session,
     *,
     tenant_id: str,
     instance: Any,
     directory: dict[int, UserModel],
+    data: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Every step of the flow, in order, with where the run has got to.
+    """Every step of the flow, in the order a run reaches them.
 
-    The library only knows about steps it has already created -- a step the run
-    has not reached yet has no row anywhere. So the shape comes from the stored
-    diagram and is matched against the human tasks that exist:
-
-    * matched and completed  -> done, by whom, when
-    * matched and open       -> waiting, on exactly these people
-    * unmatched              -> still to come, or never needed if the run has
-                                already finished down another branch
+    The shape and order come from the diagram -- the engine knows every step but
+    not where it sits in the drawing. The state of each one comes from the engine,
+    and who did it or is waiting on it comes from the human tasks, which exist
+    only for steps a person touches. A flow made entirely of service tasks has no
+    human tasks at all, which is why this cannot be built from those alone.
     """
     definition = newest_definition(session, tenant_id, instance.process_model_identifier)
     flow = bpmn_inspect.inspect(definition.source_bpmn_xml or "")
+    states = engine_states(session, tenant_id=tenant_id, instance_id=instance.id)
 
-    rows = list(
-        session.scalars(
-            select(HumanTaskModel)
-            .where(
-                HumanTaskModel.m8f_tenant_id == tenant_id,
-                HumanTaskModel.process_instance_id == instance.id,
-            )
-            .order_by(HumanTaskModel.id)
-        )
-    )
     by_element: dict[str, HumanTaskModel] = {}
-    for row in rows:
+    for row in session.scalars(
+        select(HumanTaskModel)
+        .where(
+            HumanTaskModel.m8f_tenant_id == tenant_id,
+            HumanTaskModel.process_instance_id == instance.id,
+        )
+        .order_by(HumanTaskModel.id)
+    ):
         by_element[row.task_name] = row  # the latest wins if a step repeats
 
-    finished = str(instance.status) in {"complete", "terminated"}
-    out: list[dict[str, Any]] = []
+    # The engine leaves a branch it never took as MAYBE rather than marking it
+    # dead, so on a run that is over, "still to come" has to mean "never was".
+    finished = str(instance.status) in ProcessInstanceModel.terminal_statuses()
 
-    for step in flow.user_tasks:
+    out: list[dict[str, Any]] = []
+    for step in flow.steps:
+        engine_state, when = states.get(step.element_id, ("", None))
         task = by_element.get(step.element_id)
         entry: dict[str, Any] = {
             "name": step.name,
+            "kind": step.kind,
             "lane": step.lane,
+            "state": _step_state(engine_state, finished=finished),
             "task_id": task.id if task is not None else None,
             "by": None,
             "at": None,
             "people": [],
+            "data": data.get(service_result_key(step.element_id)),
         }
-        if task is None:
-            entry["state"] = "not_needed" if finished else "upcoming"
-            out.append(entry)
-            continue
 
-        when = task.updated_at_in_seconds or task.created_at_in_seconds
-        entry["at"] = (
-            time.strftime("%d %b %Y, %H:%M", time.localtime(when)) if when else None
-        )
-        if task.completed:
-            entry["state"] = "done"
-            entry["by"] = display_name(directory, task.completed_by_user_id)
-        else:
-            entry["state"] = "waiting"
-            entry["people"] = [
-                {
-                    "name": display_name(directory, assignment.user_id)
-                    or str(assignment.user_id),
-                    "why": WHY_ASSIGNED.get(
-                        assignment.added_by or "", assignment.added_by or ""
-                    ),
-                }
-                for assignment in session.scalars(
-                    select(HumanTaskUserModel)
-                    .where(
-                        HumanTaskUserModel.m8f_tenant_id == tenant_id,
-                        HumanTaskUserModel.human_task_id == task.id,
+        if task is not None:
+            when = task.updated_at_in_seconds or task.created_at_in_seconds or when
+            if task.completed:
+                entry["by"] = display_name(directory, task.completed_by_user_id)
+            elif entry["state"] == "waiting":
+                entry["people"] = [
+                    {
+                        "name": display_name(directory, assignment.user_id)
+                        or str(assignment.user_id),
+                        "why": WHY_ASSIGNED.get(
+                            assignment.added_by or "", assignment.added_by or ""
+                        ),
+                    }
+                    for assignment in session.scalars(
+                        select(HumanTaskUserModel)
+                        .where(
+                            HumanTaskUserModel.m8f_tenant_id == tenant_id,
+                            HumanTaskUserModel.human_task_id == task.id,
+                        )
+                        .order_by(HumanTaskUserModel.id)
                     )
-                    .order_by(HumanTaskUserModel.id)
-                )
-                if assignment.user_id in directory
-            ]
+                    if assignment.user_id in directory
+                ]
+
+        if when and entry["state"] in {"done", "waiting"}:
+            entry["at"] = time.strftime("%d %b %Y, %H:%M", time.localtime(float(when)))
         out.append(entry)
     return out
 
@@ -914,6 +982,12 @@ def next_action_line(progress: list[dict[str, Any]], status: str) -> str:
     """One sentence for the top of the screen."""
     waiting = [step for step in progress if step["state"] == "waiting"]
     if not waiting:
+        if status == "complete" and not any(
+            step["kind"] == "person" for step in progress
+        ):
+            # Worth saying out loud: a flow with nobody in it never pauses, so it
+            # is finished the moment it is started.
+            return "Finished. No step in this flow waits for a person."
         return {
             "complete": "Finished.",
             "terminated": "Cancelled.",
@@ -921,8 +995,13 @@ def next_action_line(progress: list[dict[str, Any]], status: str) -> str:
             "error": "Stopped with an error.",
         }.get(status, "Nothing is waiting on a person.")
 
+    people_waiting = [step for step in waiting if step["kind"] == "person"]
+    if not people_waiting:
+        # A timer or a service call: nobody can hurry it along.
+        return "Running — " + ", ".join(step["name"] for step in waiting)
+
     parts = []
-    for step in waiting:
+    for step in people_waiting:
         people = ", ".join(person["name"] for person in step["people"]) or (
             f"anyone in {step['lane']}" if step["lane"] else "anyone"
         )

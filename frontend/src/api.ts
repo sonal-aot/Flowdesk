@@ -93,20 +93,42 @@ export interface InstanceRow {
   open_steps: number
 }
 
-export type StepState = 'done' | 'waiting' | 'upcoming' | 'not_needed'
+export type StepState =
+  | 'done'
+  | 'waiting'
+  | 'upcoming'
+  | 'not_needed'
+  | 'error'
+
+export type StepKind =
+  | 'person'
+  | 'service'
+  | 'script'
+  | 'decision'
+  | 'subflow'
+  | 'wait'
+  | 'task'
+  | 'start'
+  | 'end'
+  | 'event'
+  | 'boundary'
+  | 'branch'
 
 export interface ProgressStep {
   name: string
+  kind: StepKind
   lane: string | null
   state: StepState
   task_id: number | null
   by: string | null
   at: string | null
   people: { name: string; why: string }[]
+  /** What this step produced -- a service task's response, say. */
+  data: unknown
 }
 
 export interface InstanceDetail extends InstanceRow {
-  data: Record<string, string>
+  data: Record<string, unknown>
   events: { event: string; by: string | null; at: string }[]
   progress: ProgressStep[]
   next_action: string
