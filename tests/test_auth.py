@@ -96,14 +96,16 @@ def test_a_token_only_works_for_its_own_company(client):
 @pytest.mark.parametrize(
     "username,expected",
     [
-        ("admin", {"publish": True, "operate": True, "configure": True}),
-        ("editor", {"publish": True, "operate": False, "configure": False}),
-        ("reviewer", {"publish": False, "operate": False, "configure": False}),
-        ("submitter", {"publish": False, "operate": False, "configure": False}),
+        ("admin", {"start": True, "publish": True, "operate": True, "configure": True}),
+        ("editor", {"start": True, "publish": True, "operate": False, "configure": False}),
+        # A reviewer maps to the library's `manager`, which has no process.start.
+        ("reviewer", {"start": False, "publish": False, "operate": False, "configure": False}),
+        ("submitter", {"start": True, "publish": False, "operate": False, "configure": False}),
     ],
 )
 def test_me_reports_the_right_capabilities(client, username, expected):
     body = client.get("/me", headers=auth_headers(client, NORTHWIND, username)).json()
+    assert body["can_start"] is expected["start"]
     assert body["can_publish"] is expected["publish"]
     assert body["can_operate"] is expected["operate"]
     assert body["can_configure"] is expected["configure"]

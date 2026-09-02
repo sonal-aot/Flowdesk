@@ -86,6 +86,11 @@ export default function App() {
     setMe(null)
     setProblem(null)
     setUserMenu(null)
+    // The app never unmounts between sign-out and the next sign-in, so anything
+    // left here greets whoever signs in next -- the page the last person was on,
+    // and the run they had open. Start everyone at Flows.
+    setPage('flows')
+    setFocusRun(null)
   }
 
   useEffect(() => {
@@ -343,6 +348,7 @@ export default function App() {
 
             {me && page === 'flows' && (
               <Flows
+                me={me}
                 reloadKey={reloadKey}
                 onStarted={(id) => {
                   reload()

@@ -51,7 +51,9 @@ Starting over: stop the backend, delete `flowdesk.db`, start again.
 Two of those rows are the library's doing and two are this app's:
 
 - **`reviewer` cannot start a flow** because V1 RBAC grants `process.start` to
-  `user` and `admin` but not to `manager`. The engine refuses it.
+  `user` and `admin` but not to `manager`. The engine refuses it, and the Flows
+  page reads the same map, so a reviewer is never offered a Start button to be
+  refused on.
 - **`editor` cannot hold or cancel a run** even though the engine would allow it.
   Publishing is admin-only in the library, so an editor has to hold the library's
   *admin* role — which also grants suspend/resume/terminate. Keeping an editor out

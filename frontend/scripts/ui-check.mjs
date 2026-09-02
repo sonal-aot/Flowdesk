@@ -132,6 +132,39 @@ if (drawers > 0) {
   }
 }
 
+// --- 4. only accounts the engine will let start a flow are offered the button
+for (const [user, wanted] of [['admin', true], ['reviewer', false]]) {
+  await page.keyboard.press('Escape')
+  await page.evaluate(() => localStorage.clear())
+  await signIn(page, user)
+  await page.getByRole('button', { name: 'Flows' }).click()
+  await page.waitForSelector('.MuiCard-root')
+  const starts = await page.locator('main').getByRole('button', { name: 'Start' }).count()
+  log.push(
+    `${(starts > 0) === wanted ? 'PASS' : 'FAIL'}  ${user} ${wanted ? 'is offered' : 'is not offered'} Start — found ${starts}`,
+  )
+  if (!wanted) await page.screenshot({ path: `${OUT}/8-flows-no-start.png`, fullPage: true })
+}
+
+// --- 5. signing out must not leave the next person on the last person's page.
+// No reload anywhere here: the app staying mounted is exactly what leaked it.
+{
+  await page.evaluate(() => localStorage.clear())
+  await signIn(page, 'admin')
+  await page.getByRole('button', { name: 'Runs' }).click()
+  await page.waitForSelector('table tbody tr')
+  await page.getByRole('button', { name: /Alex Admin/ }).click()
+  await page.getByRole('menuitem', { name: 'Sign out' }).click()
+  await page.getByLabel('Username').waitFor()
+  await page.getByLabel('Username').fill('reviewer')
+  await page.getByLabel('Password').fill('reviewer')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.waitForTimeout(1500)
+  const landed = (await page.locator('main').getByRole('heading').first().innerText()).trim()
+  log.push(`${landed === 'Flows' ? 'PASS' : 'FAIL'}  next sign-in lands on Flows — showed "${landed}"`)
+  await page.screenshot({ path: `${OUT}/9-after-relogin.png` })
+}
+
 await browser.close()
 console.log(log.join('\n'))
 if (log.some((line) => line.startsWith('FAIL') || line.startsWith('PAGE ERROR'))) {

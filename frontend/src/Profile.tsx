@@ -209,6 +209,7 @@ export function Profile({
               variant="outlined"
               label={`workflow engine role: ${me.library_role}`}
             />
+            {me.can_start && <Chip size="small" variant="outlined" label="start flows" />}
             {me.can_publish && <Chip size="small" variant="outlined" label="publish flows" />}
             {me.can_operate && <Chip size="small" variant="outlined" label="operate runs" />}
             {me.can_view_all && (

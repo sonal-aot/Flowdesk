@@ -97,10 +97,12 @@ function Empty({ children }: { children: React.ReactNode }) {
 /* ---------------------------------------------------------------------- Flows */
 
 export function Flows({
+  me,
   reloadKey,
   onStarted,
   onError,
 }: {
+  me: Me
   reloadKey: number
   onStarted: (id: number) => void
   onError: Fail
@@ -137,7 +139,8 @@ export function Flows({
         subtitle={
           rows === null
             ? 'Loading…'
-            : `${rows.length} flow${rows.length === 1 ? '' : 's'} published here`
+            : `${rows.length} flow${rows.length === 1 ? '' : 's'} published here` +
+              (me.can_start ? '' : ' · you can view these, not start them')
         }
       />
       {rows?.length === 0 && (
@@ -158,14 +161,16 @@ export function Flows({
                     {flow.process_id}
                   </Typography>
                 </Box>
-                <Button
-                  variant="contained"
-                  startIcon={<PlayArrowIcon />}
-                  disabled={busy === flow.process_id}
-                  onClick={() => begin(flow)}
-                >
-                  {busy === flow.process_id ? 'Starting…' : 'Start'}
-                </Button>
+                {me.can_start && (
+                  <Button
+                    variant="contained"
+                    startIcon={<PlayArrowIcon />}
+                    disabled={busy === flow.process_id}
+                    onClick={() => begin(flow)}
+                  >
+                    {busy === flow.process_id ? 'Starting…' : 'Start'}
+                  </Button>
+                )}
               </Stack>
 
               <Table size="small" sx={{ mt: 1.5, mb: 1.5 }}>

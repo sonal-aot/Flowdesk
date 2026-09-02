@@ -110,7 +110,7 @@ export function Publish({
         forms: parsed,
         lane_owners: owners,
       })
-      setDone(`Published “${published.name}”. Anybody can start it now.`)
+      setDone(`Published “${published.name}”. It is on the Flows page now.`)
       onPublished()
     } catch (error) {
       onError(error)

@@ -15,9 +15,11 @@ from __future__ import annotations
 from m8flow_bpmn_core.models.tenant import M8flowTenantModel
 from m8flow_bpmn_core.models.user import UserModel
 from m8flow_bpmn_core.services.authorization import (
+    PROCESS_START_COMMAND,
     ROLE_ADMIN,
     ROLE_MANAGER,
     ROLE_USER,
+    V1_BASIC_ROLE_COMMAND_KEYS,
     ensure_v1_role,
 )
 from sqlalchemy import select
@@ -157,3 +159,18 @@ def usernames() -> list[str]:
 def can(username: str, capability: str) -> bool:
     found = ACCOUNTS.get(username)
     return bool(found and capability in found.capabilities)
+
+
+def can_start(username: str) -> bool:
+    """Whether the engine will let this account start a flow.
+
+    Not an app rule, which is why it is not one of the capabilities above:
+    `process.start` belongs to the library's `user` and `admin` roles and not to
+    `manager`, so a reviewer is refused by the engine itself. Reading the
+    library's own map keeps the console honest rather than restating it here.
+    """
+    found = ACCOUNTS.get(username)
+    return bool(
+        found
+        and PROCESS_START_COMMAND in V1_BASIC_ROLE_COMMAND_KEYS[found.library_role]
+    )

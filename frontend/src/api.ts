@@ -17,6 +17,7 @@ export interface Me {
   library_role: string
   company: string
   company_id: string
+  can_start: boolean
   can_publish: boolean
   can_operate: boolean
   can_configure: boolean
