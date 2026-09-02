@@ -24,14 +24,21 @@ docker compose up --build
 
 | | Port | What is there |
 |---|---|---|
-| Console | **http://localhost:8080** | The app. Sign in as `admin` / `admin` |
-| API | http://localhost:8081 | The API on its own, for curl or another client |
+| Console | **http://localhost:9280** | The app. Sign in as `admin` / `admin` |
+| API | http://localhost:9281 | The API on its own, for curl or another client |
 
-Neither port is 5173 or 8020, so the containers and `npm run dev` / `uv run
-flowdesk` can be up at the same time.
+Those numbers are deliberately nobody's default — not Keycloak's 8080, Nexus'
+8081, Django's 8000, MinIO's 9000, Prometheus' 9090 or Elasticsearch's 9200 —
+and not 5173 or 8020 either, so the containers and `npm run dev` / `uv run
+flowdesk` can be up at the same time. Change them without editing the compose
+file:
+
+```bash
+FLOWDESK_WEB_PORT=3456 FLOWDESK_API_PORT=3457 docker compose up
+```
 
 The console's nginx also proxies the API, so **the browser only ever talks to
-8080** — one origin, no CORS, and no API base URL baked into the bundle. The API
+9280** — one origin, no CORS, and no API base URL baked into the bundle. The API
 lives at the root (`/flows`, `/me`, `/tasks`), so nginx serves what exists on
 disk and sends everything else to the backend; new routes need no nginx change.
 

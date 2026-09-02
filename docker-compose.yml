@@ -1,27 +1,35 @@
 # docker compose up --build
 #
-# Then open http://localhost:8080 and sign in as admin / admin.
+# Then open http://localhost:9280 and sign in as admin / admin.
 #
-# Two containers on two ports: the API and engine on 8081, the console on 8080.
-# Neither is 5173 or 8020, so a container stack and `npm run dev` / `uv run
-# flowdesk` can be up at the same time without fighting over a port.
+# Two containers on two ports: the console on 9280, the API on 9281.
+#
+# Those numbers are deliberately nobody's default. 8080 is Keycloak's (and
+# Tomcat's, and Jenkins'), 8081 is Nexus', 8000 is Django's, 9000 is MinIO's and
+# SonarQube's, 9090 is Prometheus', 9200 is Elasticsearch's. 5173 and 8020 are
+# this app's own from-source ports, so a container stack and `npm run dev` can be
+# up at the same time.
+#
+# Override either without editing this file:
+#   FLOWDESK_WEB_PORT=3456 FLOWDESK_API_PORT=3457 docker compose up
+# or put them in a .env beside this file.
 #
 # The console's nginx also proxies the API, so the browser only ever talks to
-# 8080 and there is no CORS to configure. 8081 is for curl, another client, or
+# 9280 and there is no CORS to configure. 9281 is for curl, another client, or
 # looking at the API on its own.
 services:
   backend:
     build: .
     ports:
-      - "8081:8020"
+      - "${FLOWDESK_API_PORT:-9281}:8020"
     volumes:
       # The database outlives the container. Delete the volume to start over:
       #   docker compose down -v
       - flowdesk-data:/data
     environment:
       # The browser reaches the API through the console's nginx, same origin, so
-      # nothing cross-origin has to be allowed. Anything talking straight to
-      # 8081 from a browser page would need its origin listed here.
+      # nothing cross-origin has to be allowed. A browser page talking straight
+      # to the API port would need its origin listed here.
       FLOWDESK_CORS_ORIGINS: ""
       # Change this. Session tokens are signed with it, so the default lets
       # anyone who knows it mint a session.
@@ -31,7 +39,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "8080:80"
+      - "${FLOWDESK_WEB_PORT:-9280}:80"
     depends_on:
       backend:
         condition: service_healthy
