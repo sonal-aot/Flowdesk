@@ -7,9 +7,8 @@ __pycache__/
 .pytest_cache/
 .git/
 .gitignore
-frontend/node_modules/
-frontend/dist/
-frontend/ui-shots/
+# The backend image has no use for the console; it is its own image.
+frontend/
 tests/
 scripts/
 *.md

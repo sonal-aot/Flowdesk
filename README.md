@@ -15,21 +15,37 @@ Built on [`m8flow-bpmn-core`](../m8flow-bpmn-core), consumed as a built wheel.
 
 ### With Docker
 
-One container: the frontend is built into static files and served by the API, so
-there is one port, no CORS and no API base URL to set.
+Two containers: the API and workflow engine in one, the console in the other.
 
 ```bash
 ./scripts/refresh_wheel.sh      # vendor/*.whl is gitignored; build it first
 docker compose up --build
 ```
 
-Open **http://localhost:8020** and sign in as `admin` / `admin`.
+| | Port | What is there |
+|---|---|---|
+| Console | **http://localhost:8080** | The app. Sign in as `admin` / `admin` |
+| API | http://localhost:8081 | The API on its own, for curl or another client |
 
-The database lives on a named volume, so it survives `docker compose down`. To
-start from nothing: `docker compose down -v`.
+Neither port is 5173 or 8020, so the containers and `npm run dev` / `uv run
+flowdesk` can be up at the same time.
+
+The console's nginx also proxies the API, so **the browser only ever talks to
+8080** — one origin, no CORS, and no API base URL baked into the bundle. The API
+lives at the root (`/flows`, `/me`, `/tasks`), so nginx serves what exists on
+disk and sends everything else to the backend; new routes need no nginx change.
+
+The database is on a named volume and survives `docker compose down`. To start
+from nothing: `docker compose down -v`.
 
 **Change `FLOWDESK_SECRET_KEY` in `docker-compose.yml` before this is reachable
 by anyone else** — session tokens are signed with it.
+
+| File | |
+|---|---|
+| `Dockerfile` | The backend |
+| `frontend/Dockerfile` | The console: a static build, served by nginx |
+| `frontend/nginx.conf` | Static routing, and the proxy to the backend |
 
 ### From source
 
