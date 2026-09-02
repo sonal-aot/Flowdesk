@@ -9,6 +9,9 @@ description = "Flowdesk - a workflow console built on m8flow-bpmn-core."
 requires-python = ">=3.12,<4.0"
 dependencies = [
   "fastapi>=0.115,<1.0",
+  # `instructionsForEndUser` is a Jinja template by convention and the library
+  # ignores the element, so rendering it is this app's job.
+  "jinja2>=3.1,<4.0",
   "m8flow-bpmn-core",
   "python-multipart>=0.0.9",
   "uvicorn>=0.32,<1.0",

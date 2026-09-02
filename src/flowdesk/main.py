@@ -17,6 +17,7 @@ import os
 import time
 from typing import Any
 
+import jinja2
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from m8flow_bpmn_core import api
@@ -26,12 +27,9 @@ from m8flow_bpmn_core.errors import (
     NotFoundError,
     ValidationError,
 )
-from m8flow_bpmn_core.models.bpmn_process import BpmnProcessModel
 from m8flow_bpmn_core.models.bpmn_process_definition import (
     BpmnProcessDefinitionModel,
 )
-from m8flow_bpmn_core.models.json_data import JsonDataModel
-from m8flow_bpmn_core.models.process_instance import WORKFLOW_STATE_JSON_DATA_KEY
 from m8flow_bpmn_core.models.task import TaskModel
 from m8flow_bpmn_core.models.task_definition import TaskDefinitionModel
 from m8flow_bpmn_core.models.human_task import HumanTaskModel
@@ -729,7 +727,7 @@ def get_instance(
         pending,
         assignees_by_task(session, caller.tenant_id, directory),
     )
-    run_data = workflow_data(session, instance)
+
     row["events"] = [
         {
             "event": str(event.event_type),
@@ -750,14 +748,8 @@ def get_instance(
         tenant_id=caller.tenant_id,
         instance=instance,
         directory=directory,
-        data=run_data,
     )
-    # A service task's result is shown on its own step, so it is not repeated here.
-    row["data"] = {
-        key: value
-        for key, value in run_data.items()
-        if not (key.startswith("spiff__") and key.endswith("_result"))
-    }
+    row["data"] = collected_data(row["progress"])
     row["next_action"] = next_action_line(row["progress"], str(instance.status))
     row["allowed_actions"] = allowed_actions(instance)
     row["no_actions_reason"] = (
@@ -852,37 +844,82 @@ def _step_state(engine_state: str, *, finished: bool) -> str:
     return "not_needed" if finished and state == "upcoming" else state
 
 
-def service_result_key(element_id: str) -> str:
-    """Where SpiffWorkflow puts a service task's return value."""
-    return f"spiff__{element_id}_result"
+def render_instructions(template: str, data: dict[str, Any]) -> str:
+    """The modeller's own words for a step, with the run's data filled in.
 
-
-def workflow_data(session: Session, instance: Any) -> dict[str, Any]:
-    """Everything the run itself has collected.
-
-    No query reaches this. `GetProcessInstanceMetadataQuery` returns only what an
-    app has written to metadata, so a service task's response -- which the engine
-    puts straight into the workflow data -- is invisible through it. The real
-    thing hangs off the bpmn_process row. See FINDINGS.
+    `instructionsForEndUser` is a Jinja template -- that is the convention every
+    SpiffWorkflow modeller writes to -- and the library ignores the element
+    completely, so rendering it is the host's job. A template that refers to
+    something the run has not collected renders as blank rather than failing:
+    half a sentence beats an error on a screen somebody is trying to work from.
     """
-    process = session.get(BpmnProcessModel, instance.bpmn_process_id)
-    row = session.get(JsonDataModel, process.json_data_hash) if process else None
-    data = dict(row.data) if row is not None and isinstance(row.data, dict) else {}
-    data.pop(WORKFLOW_STATE_JSON_DATA_KEY, None)  # the serialiser's own blob
+    if not template.strip():
+        return ""
+    try:
+        return (
+            jinja2.Environment(
+                undefined=jinja2.ChainableUndefined,
+                autoescape=False,
+                # Without these a `{% for %}` row leaves a blank line behind it,
+                # which breaks every markdown table these templates are built on.
+                trim_blocks=True,
+                lstrip_blocks=True,
+            )
+            .from_string(template)
+            .render(**data)
+        )
+    except jinja2.TemplateError as error:
+        return f"(this step's instructions could not be rendered: {error})"
+
+
+def is_service_result(key: str) -> str:
+    """SpiffWorkflow names a service task's return value `spiff__<element>_result`."""
+    return key.startswith("spiff__") and key.endswith("_result")
+
+
+def collected_data(
+    progress: list[dict[str, Any]], *, with_service_results: bool = False
+) -> dict[str, Any]:
+    """What the run knows now: every finished step's contribution, in order.
+
+    A service task's response is shown on its own step and is far too big to
+    repeat in a summary, so it is left out unless somebody is going to use it --
+    a step's instructions, which are a template over exactly this.
+    """
+    data: dict[str, Any] = {}
+    for step in progress:
+        if step["state"] != "done" or not step["data"]:
+            continue
+        data.update(
+            {
+                key: value
+                for key, value in step["data"].items()
+                if with_service_results or not is_service_result(key)
+            }
+        )
     return data
 
 
 def engine_states(
     session: Session, *, tenant_id: str, instance_id: int
-) -> dict[str, tuple[str, float | None]]:
-    """Every step this run has a record for, by element id, with its state."""
-    found: dict[str, tuple[str, float | None]] = {}
-    for identifier, state, ended, started in session.execute(
+) -> dict[str, tuple[str, float | None, dict[str, Any]]]:
+    """Every step this run has a record for: its state, when, and what it added.
+
+    SpiffWorkflow records a step's contribution as a delta against its parent, so
+    `properties_json["delta"]["updates"]` is exactly what this step put into the
+    run -- a form's fields, a script's variables, a service call's response. The
+    library's own `task.json_data` is not that: it stores the serialised `data`
+    key, which under the delta scheme is `{}` for every task of every run. See
+    FINDINGS.
+    """
+    found: dict[str, tuple[str, float | None, dict[str, Any]]] = {}
+    for identifier, state, ended, started, properties in session.execute(
         select(
             TaskDefinitionModel.bpmn_identifier,
             TaskModel.state,
             TaskModel.end_in_seconds,
             TaskModel.start_in_seconds,
+            TaskModel.properties_json,
         )
         .join(TaskModel, TaskModel.task_definition_id == TaskDefinitionModel.id)
         .where(
@@ -890,10 +927,16 @@ def engine_states(
             TaskModel.process_instance_id == instance_id,
         )
     ).all():
+        delta = (properties or {}).get("delta") or {}
+        produced = delta.get("updates") or {}
         # A step inside a loop has a row per pass; the furthest one is the answer.
         previous = found.get(identifier)
         if previous is None or STEP_STATE.get(state) == "done":
-            found[identifier] = (state, float(ended or started or 0) or None)
+            found[identifier] = (
+                state,
+                float(ended or started or 0) or None,
+                produced if isinstance(produced, dict) else {},
+            )
     return found
 
 
@@ -903,7 +946,6 @@ def progress_for(
     tenant_id: str,
     instance: Any,
     directory: dict[int, UserModel],
-    data: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Every step of the flow, in the order a run reaches them.
 
@@ -934,10 +976,11 @@ def progress_for(
 
     out: list[dict[str, Any]] = []
     for step in flow.steps:
-        engine_state, when = states.get(step.element_id, ("", None))
+        engine_state, when, produced = states.get(step.element_id, ("", None, {}))
         task = by_element.get(step.element_id)
         entry: dict[str, Any] = {
             "name": step.name,
+            "element_id": step.element_id,
             "kind": step.kind,
             "lane": step.lane,
             "state": _step_state(engine_state, finished=finished),
@@ -945,7 +988,8 @@ def progress_for(
             "by": None,
             "at": None,
             "people": [],
-            "data": data.get(service_result_key(step.element_id)),
+            "data": produced or None,
+            "instructions": step.instructions,
         }
 
         if task is not None:
@@ -1173,16 +1217,15 @@ def get_task(
         ),
     )
     directory = people(session, caller.tenant_id)
-    data = {
-        item.key: item.value
-        for item in api.execute_query(
-            session,
-            api.GetProcessInstanceMetadataQuery(
-                tenant_id=caller.tenant_id,
-                process_instance_id=task.process_instance_id,
-            ),
-        )
-    }
+    progress = progress_for(
+        session,
+        tenant_id=caller.tenant_id,
+        instance=instance,
+        directory=directory,
+    )
+    step = next(
+        (row for row in progress if row["element_id"] == task.task_name), None
+    )
     return {
         "id": task.id,
         "name": task.task_title or task.task_name,
@@ -1199,7 +1242,11 @@ def get_task(
             instance.process_model_identifier,
             task.task_name,
         ),
-        "known_data": data,
+        "instructions": render_instructions(
+            step["instructions"] if step else "",
+            collected_data(progress, with_service_results=True),
+        ),
+        "known_data": collected_data(progress),
     }
 
 

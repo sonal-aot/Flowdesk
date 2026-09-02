@@ -7,6 +7,7 @@ import time
 import json
 
 from conftest import FIXTURES, auth_headers, publish_fixture
+from flowdesk import bpmn_inspect, main
 
 ADMIN = ("northwind", "admin")
 EDITOR = ("northwind", "editor")
@@ -790,3 +791,69 @@ def test_the_trace_shows_steps_no_person_ever_touches(client):
     assert {"service", "decision"} <= kinds, kinds
     service = next(step for step in progress if step["kind"] == "service")
     assert service["state"] == "done"
+
+
+MANUAL_TASK_BPMN = """<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+    xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
+    id="Definitions_manual" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_manual_demo" isExecutable="true">
+    <bpmn:startEvent id="start"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="show" />
+    <bpmn:manualTask id="show" name="Read This">
+      <bpmn:extensionElements>
+        <spiffworkflow:instructionsForEndUser>## Report
+
+**Status:** {{ result.http_status }}
+
+| Name |
+{% for row in result.body %}
+| {{ row.name }} |
+{% endfor %}</spiffworkflow:instructionsForEndUser>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f1</bpmn:incoming><bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:manualTask>
+    <bpmn:sequenceFlow id="f2" sourceRef="show" targetRef="end" />
+    <bpmn:endEvent id="end"><bpmn:incoming>f2</bpmn:incoming></bpmn:endEvent>
+  </bpmn:process>
+</bpmn:definitions>"""
+
+
+def test_a_manual_task_is_a_person_step_and_keeps_its_instructions():
+    """`manualTask` is a person step with no form, and the modeller's own text
+    for it lives in `instructionsForEndUser`, which the library ignores."""
+    flow = bpmn_inspect.inspect(MANUAL_TASK_BPMN)
+
+    assert [(step.kind, step.name) for step in flow.steps] == [
+        ("start", "Start"),
+        ("person", "Read This"),
+        ("end", "End"),
+    ]
+    assert flow.user_tasks[0].form_schema is None
+    assert flow.user_tasks[0].instructions.startswith("## Report")
+
+
+def test_instructions_are_rendered_against_what_the_run_collected():
+    step = bpmn_inspect.inspect(MANUAL_TASK_BPMN).steps[1]
+    rendered = main.render_instructions(
+        step.instructions,
+        {"result": {"http_status": 200, "body": [{"name": "Acme"}, {"name": "Bo"}]}},
+    )
+
+    assert "**Status:** 200" in rendered
+    # No blank line between rows, or every markdown table falls apart.
+    assert "| Acme |\n| Bo |" in rendered
+
+
+def test_instructions_missing_their_data_render_blank_rather_than_failing():
+    """Half a sentence beats an error on a screen somebody is trying to work from."""
+    step = bpmn_inspect.inspect(MANUAL_TASK_BPMN).steps[1]
+
+    rendered = main.render_instructions(step.instructions, {})
+
+    assert "## Report" in rendered
+    assert "**Status:**" in rendered
+
+
+def test_a_broken_template_says_so_instead_of_raising():
+    assert "could not be rendered" in main.render_instructions("{% for %}", {})

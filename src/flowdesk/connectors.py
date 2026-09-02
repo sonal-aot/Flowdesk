@@ -171,7 +171,18 @@ class HttpConnector:
             parsed = json.loads(body)
         except ValueError:
             pass
-        return api.ServiceTaskResult(payload={"status": status, "body": parsed})
+        # m8flow's own http connector returns `body`/`http_status`/`mimetype`,
+        # and every diagram written against its catalogue reads those names, so
+        # this matches them rather than inventing a third shape.
+        return api.ServiceTaskResult(
+            payload={
+                "body": parsed,
+                "http_status": status,
+                "mimetype": "application/json"
+                if parsed is not body
+                else "text/plain",
+            }
+        )
 
 
 @contextmanager

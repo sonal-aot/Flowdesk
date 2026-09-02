@@ -78,7 +78,9 @@ export interface TaskDetail {
   claimed_by: string | null
   completed: boolean
   form: FormSchema | null
-  known_data: Record<string, string>
+  /** The step's `instructionsForEndUser`, with the run's data filled in. */
+  instructions: string
+  known_data: Record<string, unknown>
 }
 
 export interface InstanceRow {

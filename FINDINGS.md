@@ -229,28 +229,73 @@ missing.
 
 ---
 
-## 11. A run's own data is not reachable through any query — *medium*
+## 11. `task.json_data` is dead: SpiffWorkflow stores deltas — *medium*
 
-`GetProcessInstanceMetadataQuery` sounds like "the data this run collected". It
-is not: it returns only what a host has itself written to
-`process_instance_metadata`, and every value is a string. Anything the *flow*
-produced is invisible through it.
+`TaskModel` has a `json_data_hash`, and `_upsert_task_model_from_payload` fills it
+from the serialised task's `data` key. Under SpiffWorkflow 3's serialiser that key
+is `{}` for every task of every run, because a task's contribution is recorded as
+a **delta** against its parent:
 
-A service task is the clear case. The engine puts its response into the workflow
-data as `spiff__<elementId>_result`, and it lands in the `json_data` row hanging
-off `bpmn_process` — alongside `__m8f_workflow_state_json`, the serialiser's own
-blob. A flow whose only step is an HTTP call therefore reports no data at all
-through the public API, while the response sits in the database in full.
+```json
+{"task_spec": "Activity_0qpzdpu", "state": 64, "data": {},
+ "delta": {"updates": {"spiff__Activity_0qpzdpu_result": {"http_status": 200, "body": [...]}},
+           "deletions": []}}
+```
 
-Reading it means importing `BpmnProcessModel` and `JsonDataModel` and knowing to
-drop the serialiser key, which is not documented and is not obviously stable.
+Every `task.json_data_hash` in this app's database is
+`44136fa355b3678a…`, the sha256 of `{}`. The column is not wrong so much as
+inert.
 
-**Suggestion:** a query returning a run's workflow data, with the serialiser's
-internals excluded. Typed values, not the stringified metadata.
+The data is not lost -- the delta survives inside `task.properties_json`, which
+the library stores verbatim -- so a host can read
+`properties_json["delta"]["updates"]` and get exactly what each step contributed:
+a form's fields, a script's variables, a service call's response. That is a
+better answer than anything the API offers, and it is reachable only by knowing
+SpiffWorkflow's serialisation format.
 
-*Evidence:* `src/flowdesk/main.py`, `workflow_data`; run of a service-task-only
-flow, whose 4KB HTTP response reached the UI only after reading `json_data`
-directly
+The public route, `GetProcessInstanceMetadataQuery`, returns only what a host has
+itself written to metadata, and stringifies it. A flow whose only step is an HTTP
+call reports no data at all through it while the response sits in the database in
+full. Worse, on a *running* instance the workflow-level `data` is empty too: the
+value is only in the delta until the run completes, so "show the user what the
+service call returned" is impossible through the public API at exactly the moment
+it matters.
+
+**Suggestion:** either populate `task.json_data` with the task's effective data
+(parent's data plus its delta), or drop the column and expose a query that
+returns a run's steps with what each contributed.
+
+*Evidence:* `src/flowdesk/main.py`, `engine_states`; every `json_data_hash` in
+`flowdesk.db` equals the hash of `{}`
+
+---
+
+## 12. `instructionsForEndUser` is parsed and ignored — *medium*
+
+`spiffworkflow:instructionsForEndUser` is how a modeller says what a step should
+show the person doing it. It is the entire content of a BPMN manual task, and
+m8flow's own connector templates lean on it: the "http connector usage" template
+in *Workflows - QA* is a GET followed by a manual task whose instructions render
+the response as a markdown table.
+
+The string `instructionsForEndUser` does not appear anywhere in
+`m8flow-bpmn-core`. The element parses without complaint and is dropped, so a
+host is handed a manual task named "Display Response" with no way to learn what
+it is meant to display. This app now reads the element out of the stored diagram
+itself and renders it with Jinja against the run's collected data, which is the
+convention those templates are written to.
+
+The engine handles the manual task itself correctly — the run stops at
+`user_input_required`, a human task is created, and completing it with an empty
+payload finishes the run. It is only the modeller's text that is lost.
+
+**Suggestion:** carry `instructionsForEndUser` onto the task, ideally rendered.
+The parser already walks the extension elements to find
+`serviceTaskOperator`; this is the same trip.
+
+*Evidence:* `src/flowdesk/bpmn_inspect.py`, `_instructions`;
+`src/flowdesk/main.py`, `render_instructions`;
+`tests/test_flows.py::test_a_manual_task_is_a_person_step_and_keeps_its_instructions`
 
 ---
 
@@ -321,8 +366,11 @@ particular to one app:
 2. Make lane ownership revocable (#2).
 3. Populate `form_file_name` (#3), or remove the columns.
 4. Add the read queries a console needs: what is published (#4), a run's steps
-   and their states (#9), and a run's own data (#11). All three are already in
-   the tables; a host has to import the ORM models to reach them.
-5. Make roles composable so a host can express its own (#7).
-6. Add a safe user-update command (#8).
-7. Publish the lifecycle preconditions (#10).
+   and their states (#9), and what each step contributed (#11). All three are
+   already in the tables; a host has to import the ORM models and understand
+   SpiffWorkflow's delta format to reach them.
+5. Carry `instructionsForEndUser` through to the task (#12) — without it a manual
+   task is a step with no content.
+6. Make roles composable so a host can express its own (#7).
+7. Add a safe user-update command (#8).
+8. Publish the lifecycle preconditions (#10).

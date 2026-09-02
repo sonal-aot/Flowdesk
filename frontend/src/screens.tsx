@@ -43,7 +43,7 @@ import {
   type TaskDetail,
   type TaskRow,
 } from './api'
-import { FreeForm, TaskForm } from './TaskForm'
+import { Acknowledge, FreeForm, Instructions, TaskForm } from './TaskForm'
 
 type Fail = (error: unknown) => void
 
@@ -351,7 +351,12 @@ export function Work({
         ))}
       </Stack>
 
-      <Dialog open={open !== null} onClose={() => setOpen(null)} fullWidth maxWidth="sm">
+      <Dialog
+        open={open !== null}
+        onClose={() => setOpen(null)}
+        fullWidth
+        maxWidth={open?.instructions ? 'md' : 'sm'}
+      >
         {open && (
           <>
             <DialogTitle sx={{ pb: 0.5 }}>
@@ -361,6 +366,7 @@ export function Work({
               </Typography>
             </DialogTitle>
             <DialogContent>
+              {open.instructions && <Instructions text={open.instructions} />}
               {Object.keys(open.known_data).length > 0 && (
                 <>
                   <Typography
@@ -391,6 +397,8 @@ export function Work({
               )}
               {open.form ? (
                 <TaskForm schema={open.form} busy={busy} onSubmit={submit} />
+              ) : open.instructions ? (
+                <Acknowledge busy={busy} onSubmit={submit} />
               ) : (
                 <FreeForm busy={busy} onSubmit={submit} />
               )}
@@ -751,9 +759,15 @@ function asText(value: unknown): string {
 
 const MAX_SHOWN = 4000
 
-/** What a step produced. A service task's response can be enormous, so it stays
- *  folded away until somebody asks for it. */
-function StepData({ value }: { value: unknown }) {
+const PRODUCED: Partial<Record<ProgressStep['kind'], string>> = {
+  person: 'what was filled in',
+  service: 'what it returned',
+  decision: 'what it decided',
+}
+
+/** What a step added to the run. A service task's response can be enormous, so
+ *  it stays folded away until somebody asks for it. */
+function StepData({ value, kind }: { value: unknown; kind: ProgressStep['kind'] }) {
   const text = asText(value)
   return (
     <Box component="details" sx={{ mt: 0.75 }}>
@@ -761,7 +775,8 @@ function StepData({ value }: { value: unknown }) {
         component="summary"
         sx={{ cursor: 'pointer', fontSize: 12, color: 'text.secondary' }}
       >
-        what it returned ({text.length.toLocaleString()} characters)
+        {PRODUCED[kind] ?? 'what it produced'} (
+        {text.length.toLocaleString()} characters)
       </Box>
       <Box
         component="pre"
@@ -826,7 +841,7 @@ function StepLine({ step, last }: { step: ProgressStep; last: boolean }) {
             .join(' · ')}
         </Typography>
         {step.data !== null && step.data !== undefined && (
-          <StepData value={step.data} />
+          <StepData value={step.data} kind={step.kind} />
         )}
         {step.state === 'waiting' && (
           <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: 'wrap' }} useFlexGap>

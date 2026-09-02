@@ -33,6 +33,9 @@ class UserTask:
     lane: str | None
     form_schema: str | None
     form_ui_schema: str | None
+    #: `instructionsForEndUser`: what the modeller wants shown on this step. A
+    #: Jinja template over the run's data, so it is rendered, not printed.
+    instructions: str = ""
 
 
 #: Every flow node worth showing in a run's trace, and what to call its kind.
@@ -72,12 +75,13 @@ UNNAMED: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class Step:
-    """One node of the diagram, in the order it is written."""
+    """One node of the diagram, in the order a run reaches it."""
 
     element_id: str
     name: str
     kind: str
     lane: str | None
+    instructions: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +125,18 @@ def _properties(element) -> dict[str, str]:
             if name:
                 found[name] = prop.get("value") or ""
     return found
+
+
+def _instructions(element) -> str:
+    """`spiffworkflow:instructionsForEndUser`, the text to show on a step.
+
+    The library ignores this element entirely, so a host that wants the modeller's
+    own words on the screen has to read them here. See FINDINGS.
+    """
+    node = element.find(
+        f"{BPMN}extensionElements/{SPIFF}instructionsForEndUser"
+    )
+    return (node.text or "").strip() if node is not None else ""
 
 
 def _lane_of(element_id: str, lanes: dict[str, list[str]]) -> str | None:
@@ -206,6 +222,7 @@ def inspect(bpmn_xml: str) -> Flow:
                     lane=_lane_of(element_id, lanes),
                     form_schema=props.get(FORM_SCHEMA_PROPERTY) or None,
                     form_ui_schema=props.get(FORM_UI_PROPERTY) or None,
+                    instructions=_instructions(element),
                 )
             )
 
@@ -223,6 +240,7 @@ def inspect(bpmn_xml: str) -> Flow:
                 name=element.get("name") or UNNAMED.get(kind) or _readable(element_id),
                 kind=kind,
                 lane=_lane_of(element_id, lanes),
+                instructions=_instructions(element),
             )
         )
 
