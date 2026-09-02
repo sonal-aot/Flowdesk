@@ -24,6 +24,7 @@ import {
   Typography,
 } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import AccountTreeIcon from '@mui/icons-material/AccountTree'
 import CloseIcon from '@mui/icons-material/Close'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlineOutlined'
 import EditIcon from '@mui/icons-material/Edit'
@@ -47,6 +48,7 @@ import {
   type TaskRow,
 } from './api'
 import { Acknowledge, FreeForm, Instructions, TaskForm } from './TaskForm'
+import { Diagram } from './Diagram'
 
 type Fail = (error: unknown) => void
 
@@ -118,6 +120,8 @@ export function Flows({
   const [rows, setRows] = useState<FlowSummary[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [removing, setRemoving] = useState<FlowSummary | null>(null)
+  const [drawn, setDrawn] = useState<Record<string, string>>({})
+  const [showing, setShowing] = useState<string | null>(null)
 
   useEffect(() => {
     let stale = false
@@ -129,6 +133,22 @@ export function Flows({
       stale = true
     }
   }, [reloadKey])
+
+  async function show(flow: FlowSummary) {
+    if (showing === flow.process_id) {
+      setShowing(null)
+      return
+    }
+    setShowing(flow.process_id)
+    if (drawn[flow.process_id]) return
+    try {
+      const { bpmn } = await api.diagram(flow.process_id)
+      setDrawn((current) => ({ ...current, [flow.process_id]: bpmn }))
+    } catch (error) {
+      setShowing(null)
+      onError(error)
+    }
+  }
 
   async function edit(flow: FlowSummary) {
     setBusy(flow.process_id)
@@ -195,6 +215,14 @@ export function Flows({
                   </Typography>
                 </Box>
                 <Stack direction="row" spacing={1}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<AccountTreeIcon />}
+                    onClick={() => show(flow)}
+                  >
+                    {showing === flow.process_id ? 'Hide diagram' : 'Diagram'}
+                  </Button>
                   {me.can_publish && (
                     <>
                       <Button
@@ -230,6 +258,18 @@ export function Flows({
                   )}
                 </Stack>
               </Stack>
+
+              {showing === flow.process_id && (
+                <Box sx={{ mt: 2 }}>
+                  {drawn[flow.process_id] ? (
+                    <Diagram bpmn={drawn[flow.process_id]} height={340} />
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      Drawing…
+                    </Typography>
+                  )}
+                </Box>
+              )}
 
               {flow.steps.length === 0 ? (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5, mb: 1.5 }}>
@@ -524,6 +564,9 @@ export function Runs({
   const [rows, setRows] = useState<InstanceRow[] | null>(null)
   const [status, setStatus] = useState('all')
   const [open, setOpen] = useState<InstanceDetail | null>(null)
+  // The diagram for the open run, in a dialog: 420px of drawer is no place for
+  // a diagram that is 2,500px wide.
+  const [picture, setPicture] = useState<string | null>(null)
 
   useEffect(() => {
     let stale = false
@@ -683,6 +726,21 @@ export function Runs({
               </Paper>
 
               <Section title="The flow">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<AccountTreeIcon />}
+                  sx={{ mb: 1.5 }}
+                  onClick={async () => {
+                    try {
+                      setPicture((await api.diagram(open.process_id)).bpmn)
+                    } catch (error) {
+                      onError(error)
+                    }
+                  }}
+                >
+                  See it on the diagram
+                </Button>
                 <Stack spacing={0}>
                   {open.progress.map((step, index) => (
                     <StepLine
@@ -794,6 +852,28 @@ export function Runs({
           </Box>
         </Box>
       </Drawer>
+
+      <Dialog
+        open={picture !== null}
+        onClose={() => setPicture(null)}
+        fullWidth
+        maxWidth="lg"
+        sx={{ zIndex: (theme) => theme.zIndex.drawer + 3 }}
+      >
+        <DialogTitle sx={{ pb: 0.5 }}>
+          Run #{open?.id}
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {open?.summary} — green is done, blue is waiting now, faded never
+            happened. Scroll to zoom, drag to move.
+          </Typography>
+        </DialogTitle>
+        <DialogContent>
+          {picture && (
+            <Diagram bpmn={picture} progress={open?.progress ?? []} height="70vh" />
+          )}
+        </DialogContent>
+      </Dialog>
+
     </>
   )
 }

@@ -118,6 +118,8 @@ export type StepKind =
 
 export interface ProgressStep {
   name: string
+  /** The BPMN element id, for lining a step up with the drawing. */
+  element_id: string
   kind: StepKind
   lane: string | null
   state: StepState

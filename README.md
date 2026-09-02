@@ -154,6 +154,18 @@ set to something private in anything resembling a real deployment.
 > inside the server process, and its service tasks make real outbound calls. That
 > makes the publish permission as powerful as server access — see FINDINGS #1.
 
+## Seeing the diagram
+
+**Flows → Diagram** draws any published flow, exactly as it was modelled.
+
+**Runs → a run → See it on the diagram** draws it with that run's path on it:
+green for what happened, blue for what it is waiting on now, faded for the
+branches it never took. Scroll to zoom, drag to move.
+
+Rendered with [bpmn-js](https://github.com/bpmn-io/bpmn-js), the same viewer the
+modeller and m8flow use, so a diagram looks here the way it looked where it was
+drawn. Steps are lined up with the drawing by BPMN element id.
+
 ## Screens
 
 | | |
@@ -301,6 +313,7 @@ see [`connectors.py`](src/flowdesk/connectors.py).
 | `frontend/src/Login.tsx` | Sign-in |
 | `frontend/src/TaskForm.tsx` | `@rjsf/mui` form from the diagram's JSON Schema, with a free-form fallback |
 | `frontend/src/Publish.tsx` | The publishing screen |
+| `frontend/src/Diagram.tsx` | bpmn-js viewer, with a run's progress painted on it |
 
 ## Tests
 
