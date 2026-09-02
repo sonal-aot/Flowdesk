@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+  id="Definitions_tour_policy" name="Tour Policy"
+  namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="tour_policy" name="Tour Policy">
+    <decisionTable id="DecisionTable_tour_policy">
+      <input id="Input_amount">
+        <inputExpression id="InputExpression_amount" typeRef="integer" expressionLanguage="python">
+          <text>amount</text>
+        </inputExpression>
+      </input>
+      <output id="Output_needs_review" name="needs_review" typeRef="boolean" />
+      <rule id="Rule_small">
+        <description>100 or less is inside policy</description>
+        <inputEntry id="In_small"><text>&lt;= 100</text></inputEntry>
+        <outputEntry id="Out_small"><text>False</text></outputEntry>
+      </rule>
+      <rule id="Rule_large">
+        <description>Over 100 goes to review</description>
+        <inputEntry id="In_large"><text>&gt; 100</text></inputEntry>
+        <outputEntry id="Out_large"><text>True</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+</definitions>

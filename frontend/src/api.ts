@@ -139,6 +139,16 @@ export interface InstanceDetail extends InstanceRow {
   activity: { operation_id: string; outcome: string; detail: string; at: string }[]
 }
 
+/** A published flow's own files, for editing it. */
+export interface FlowSource {
+  process_id: string
+  name: string
+  bpmn: string
+  dmn: string | null
+  forms: Record<string, unknown>
+  lane_owners: Record<string, string[]>
+}
+
 export interface InspectReport {
   process_id: string
   name: string
@@ -252,6 +262,10 @@ export const api = {
   flow: (processId: string) => call<FlowSummary>(`/flows/${processId}`),
   diagram: (processId: string) =>
     call<{ bpmn: string }>(`/flows/${processId}/diagram`),
+  flowSource: (processId: string) =>
+    call<FlowSource>(`/flows/${processId}/source`),
+  deleteFlow: (processId: string) =>
+    call<{ files_removed: number }>(`/flows/${processId}`, { method: 'DELETE' }),
   operations: () =>
     call<{ operation_id: string; description: string }[]>('/operations'),
   inspect: (bpmn: string) =>

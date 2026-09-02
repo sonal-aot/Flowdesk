@@ -15,7 +15,7 @@ import {
   Typography,
 } from '@mui/material'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
-import { api, type InspectReport, type Me } from './api'
+import { api, type FlowSource, type InspectReport, type Me } from './api'
 import { PageHead } from './screens'
 
 /**
@@ -28,10 +28,13 @@ import { PageHead } from './screens'
  */
 export function Publish({
   me,
+  prefill,
   onPublished,
   onError,
 }: {
   me: Me
+  /** Editing a published flow: the screen starts from what is already there. */
+  prefill: FlowSource | null
   onPublished: () => void
   onError: (error: unknown) => void
 }) {
@@ -44,6 +47,44 @@ export function Publish({
   const [operations, setOperations] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
+
+  // Editing means publishing again, so the screen fills itself in and the
+  // publisher changes what they came to change.
+  useEffect(() => {
+    if (!prefill) return
+    let stale = false
+    api
+      .inspect(prefill.bpmn)
+      .then((found) => {
+        if (stale) return
+        setBpmn(prefill.bpmn)
+        setReport(found)
+        setName(prefill.name)
+        setDmn(prefill.dmn ?? '')
+        setDone(null)
+        setOwners(
+          Object.fromEntries(
+            found.lanes.map((lane) => [lane, prefill.lane_owners[lane] ?? []]),
+          ),
+        )
+        setForms(
+          Object.fromEntries(
+            found.form_files
+              .filter((file) => !file.endsWith('uischema.json'))
+              .map((file) => [
+                file,
+                prefill.forms[file]
+                  ? JSON.stringify(prefill.forms[file], null, 2)
+                  : '',
+              ]),
+          ),
+        )
+      })
+      .catch(onError)
+    return () => {
+      stale = true
+    }
+  }, [prefill])
 
   useEffect(() => {
     api
@@ -126,8 +167,12 @@ export function Publish({
   return (
     <>
       <PageHead
-        title="Publish a flow"
-        subtitle={`Upload a BPMN diagram. It will be available in ${me.company} only.`}
+        title={prefill ? `Edit ${prefill.name}` : 'Publish a flow'}
+        subtitle={
+          prefill
+            ? 'Change what you need and publish. The flow keeps its id, and this becomes its newest version.'
+            : `Upload a BPMN diagram. It will be available in ${me.company} only.`
+        }
       />
 
       <Alert severity="warning" sx={{ mb: 2 }}>
@@ -172,6 +217,7 @@ export function Publish({
             fullWidth
             multiline
             minRows={5}
+            maxRows={16}
             size="small"
             placeholder="…or paste the BPMN XML here"
             value={bpmn}
@@ -319,6 +365,7 @@ export function Publish({
                       fullWidth
                       multiline
                       minRows={3}
+                      maxRows={12}
                       size="small"
                       label={filename}
                       placeholder='{"type":"object","properties":{"note":{"type":"string"}}}'

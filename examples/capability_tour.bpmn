@@ -1,0 +1,452 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Capability tour: one flow that exercises everything m8flow-bpmn-core can
+  currently run. Every construct here has been started and driven to an end
+  event; see examples/README.md for what each one proves and what is absent.
+
+  Requires capability_tour.dmn and capability_tour.forms.json.
+-->
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
+  id="Definitions_capability_tour" targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <bpmn:collaboration id="Collaboration_tour">
+    <bpmn:participant id="Participant_tour" name="Capability Tour" processRef="Process_capability_tour" />
+  </bpmn:collaboration>
+
+  <bpmn:process id="Process_capability_tour" name="Capability Tour" isExecutable="true">
+
+    <!-- Lanes are how work is assigned: publishing names an owner per lane. -->
+    <bpmn:laneSet id="LaneSet_tour">
+      <bpmn:lane id="Lane_requester" name="Requester">
+        <bpmn:flowNodeRef>start</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_submit</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_score</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_policy</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>gw_route</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_auto</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>gw_outcome</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>wait_cooling</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_record</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_review</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_closed</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_approver" name="Approver">
+        <bpmn:flowNodeRef>gw_split</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_approve</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>timer_escalate</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>gw_decided</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>gw_join</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_trace</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end_rejected</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_finance" name="Finance">
+        <bpmn:flowNodeRef>task_budget</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>task_escalate</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+
+    <bpmn:startEvent id="start" name="Request raised">
+      <bpmn:outgoing>f_start</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- userTask with a JSON Schema form, named in a spiffworkflow property. -->
+    <bpmn:userTask id="task_submit" name="Submit Request">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="submit-request.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_start</bpmn:incoming>
+      <bpmn:outgoing>f_submit</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- scriptTask: Python, evaluated against the run's data. -->
+    <bpmn:scriptTask id="task_score" name="Score Request">
+      <bpmn:script>tier = "large" if amount &gt; 500 else ("medium" if amount &gt; 100 else "small")
+is_urgent = urgency == "high"
+score = amount // 10</bpmn:script>
+      <bpmn:incoming>f_submit</bpmn:incoming>
+      <bpmn:outgoing>f_score</bpmn:outgoing>
+    </bpmn:scriptTask>
+
+    <!-- businessRuleTask: the decision table in capability_tour.dmn. -->
+    <bpmn:businessRuleTask id="task_policy" name="Apply Policy">
+      <bpmn:extensionElements>
+        <spiffworkflow:calledDecisionId>tour_policy</spiffworkflow:calledDecisionId>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_score</bpmn:incoming>
+      <bpmn:outgoing>f_policy</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+
+    <!-- exclusiveGateway: one branch is taken, chosen by a condition. -->
+    <bpmn:exclusiveGateway id="gw_route" name="Needs review?">
+      <bpmn:incoming>f_policy</bpmn:incoming>
+      <bpmn:outgoing>f_review</bpmn:outgoing>
+      <bpmn:outgoing>f_auto</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:scriptTask id="task_auto" name="Approve By Policy">
+      <bpmn:script>decision = "approved"
+decided_by = "policy"</bpmn:script>
+      <bpmn:incoming>f_auto</bpmn:incoming>
+      <bpmn:outgoing>f_auto_out</bpmn:outgoing>
+    </bpmn:scriptTask>
+
+    <!-- parallelGateway: both branches run, and the join waits for both. -->
+    <bpmn:parallelGateway id="gw_split" name="Review in parallel">
+      <bpmn:incoming>f_review</bpmn:incoming>
+      <bpmn:outgoing>f_split_a</bpmn:outgoing>
+      <bpmn:outgoing>f_split_b</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:userTask id="task_approve" name="Approve Request">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="approve-request.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_split_a</bpmn:incoming>
+      <bpmn:outgoing>f_approved</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- Interrupting boundary timer: cancels the approval and escalates it.
+         Shorten this to see it fire; the app's poller drives it. -->
+    <bpmn:boundaryEvent id="timer_escalate" name="No answer in 10 minutes"
+      attachedToRef="task_approve" cancelActivity="true">
+      <bpmn:outgoing>f_escalate</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_escalate">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">'PT10M'</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:userTask id="task_escalate" name="Escalated Approval">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="approve-request.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_escalate</bpmn:incoming>
+      <bpmn:outgoing>f_escalated</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:userTask id="task_budget" name="Check Budget">
+      <bpmn:extensionElements>
+        <spiffworkflow:properties>
+          <spiffworkflow:property name="formJsonSchemaFilename" value="check-budget.json" />
+        </spiffworkflow:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_split_b</bpmn:incoming>
+      <bpmn:outgoing>f_budget</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- Whoever decided it, there is one decision. An exclusive gateway merges
+         the two ways of getting one; a parallel join here would wait forever for
+         the branch that was not taken. -->
+    <bpmn:exclusiveGateway id="gw_decided" name="Decided">
+      <bpmn:incoming>f_approved</bpmn:incoming>
+      <bpmn:incoming>f_escalated</bpmn:incoming>
+      <bpmn:outgoing>f_decided</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:parallelGateway id="gw_join" name="Both done">
+      <bpmn:incoming>f_decided</bpmn:incoming>
+      <bpmn:incoming>f_budget</bpmn:incoming>
+      <bpmn:outgoing>f_join</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <!-- The same gateway type used as a merge, then split again on the verdict. -->
+    <bpmn:exclusiveGateway id="gw_outcome" name="Approved?">
+      <bpmn:incoming>f_join</bpmn:incoming>
+      <bpmn:incoming>f_auto_out</bpmn:incoming>
+      <bpmn:outgoing>f_yes</bpmn:outgoing>
+      <bpmn:outgoing>f_no</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Intermediate catch timer: the run waits here on its own. -->
+    <bpmn:intermediateCatchEvent id="wait_cooling" name="Cooling-off">
+      <bpmn:incoming>f_yes</bpmn:incoming>
+      <bpmn:outgoing>f_cooled</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_cooling">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">'PT5S'</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+
+    <!-- serviceTask: a connector call, parameters evaluated as Python. -->
+    <bpmn:serviceTask id="task_record" name="Record Outcome">
+      <bpmn:extensionElements>
+        <spiffworkflow:serviceTaskOperator id="log/Write">
+          <spiffworkflow:parameters>
+            <spiffworkflow:parameter id="entry" type="any" value="subject + &#34; (&#34; + tier + &#34;) &#34; + decision" />
+            <spiffworkflow:parameter id="score" type="any" value="score" />
+          </spiffworkflow:parameters>
+        </spiffworkflow:serviceTaskOperator>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_cooled</bpmn:incoming>
+      <bpmn:outgoing>f_recorded</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- manualTask: nothing to fill in. instructionsForEndUser is the content,
+         a Jinja template over whatever the run has collected. -->
+    <bpmn:manualTask id="task_review" name="Review Outcome">
+      <bpmn:extensionElements>
+        <spiffworkflow:instructionsForEndUser>## {{ subject }}
+
+**Decision:** {{ decision }}{% if decided_by %} (by {{ decided_by }}){% endif %}
+
+| Field | Value |
+| :--- | :--- |
+| Amount | {{ amount }} |
+| Tier | {{ tier }} |
+| Urgency | {{ urgency }} |
+| Score | {{ score }} |
+| Needed review | {{ needs_review }} |
+| Budget checked | {{ budget_ok }} |
+
+Nothing to fill in — read it and close the request.</spiffworkflow:instructionsForEndUser>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_recorded</bpmn:incoming>
+      <bpmn:outgoing>f_reviewed</bpmn:outgoing>
+    </bpmn:manualTask>
+
+    <bpmn:serviceTask id="task_trace" name="Trace Rejection">
+      <bpmn:extensionElements>
+        <spiffworkflow:serviceTaskOperator id="log/Trace">
+          <spiffworkflow:parameters>
+            <spiffworkflow:parameter id="note" type="any" value="&#34;rejected: &#34; + subject" />
+          </spiffworkflow:parameters>
+        </spiffworkflow:serviceTaskOperator>
+      </bpmn:extensionElements>
+      <bpmn:incoming>f_no</bpmn:incoming>
+      <bpmn:outgoing>f_traced</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Two end events, so a run records which way it went. -->
+    <bpmn:endEvent id="end_closed" name="Closed">
+      <bpmn:incoming>f_reviewed</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="end_rejected" name="Rejected">
+      <bpmn:incoming>f_traced</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="f_start" sourceRef="start" targetRef="task_submit" />
+    <bpmn:sequenceFlow id="f_submit" sourceRef="task_submit" targetRef="task_score" />
+    <bpmn:sequenceFlow id="f_score" sourceRef="task_score" targetRef="task_policy" />
+    <bpmn:sequenceFlow id="f_policy" sourceRef="task_policy" targetRef="gw_route" />
+    <bpmn:sequenceFlow id="f_review" name="Needs review" sourceRef="gw_route" targetRef="gw_split">
+      <bpmn:conditionExpression>needs_review == True or is_urgent == True</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_auto" name="Within policy" sourceRef="gw_route" targetRef="task_auto">
+      <bpmn:conditionExpression>needs_review == False and is_urgent == False</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_split_a" sourceRef="gw_split" targetRef="task_approve" />
+    <bpmn:sequenceFlow id="f_split_b" sourceRef="gw_split" targetRef="task_budget" />
+    <bpmn:sequenceFlow id="f_approved" sourceRef="task_approve" targetRef="gw_decided" />
+    <bpmn:sequenceFlow id="f_escalate" sourceRef="timer_escalate" targetRef="task_escalate" />
+    <bpmn:sequenceFlow id="f_escalated" sourceRef="task_escalate" targetRef="gw_decided" />
+    <bpmn:sequenceFlow id="f_decided" sourceRef="gw_decided" targetRef="gw_join" />
+    <bpmn:sequenceFlow id="f_budget" sourceRef="task_budget" targetRef="gw_join" />
+    <bpmn:sequenceFlow id="f_join" sourceRef="gw_join" targetRef="gw_outcome" />
+    <bpmn:sequenceFlow id="f_auto_out" sourceRef="task_auto" targetRef="gw_outcome" />
+    <bpmn:sequenceFlow id="f_yes" name="Approved" sourceRef="gw_outcome" targetRef="wait_cooling">
+      <bpmn:conditionExpression>decision == "approved"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_no" name="Rejected" sourceRef="gw_outcome" targetRef="task_trace">
+      <bpmn:conditionExpression>decision != "approved"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f_cooled" sourceRef="wait_cooling" targetRef="task_record" />
+    <bpmn:sequenceFlow id="f_recorded" sourceRef="task_record" targetRef="task_review" />
+    <bpmn:sequenceFlow id="f_reviewed" sourceRef="task_review" targetRef="end_closed" />
+    <bpmn:sequenceFlow id="f_traced" sourceRef="task_trace" targetRef="end_rejected" />
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_tour">
+    <bpmndi:BPMNPlane id="BPMNPlane_tour" bpmnElement="Collaboration_tour">
+      <bpmndi:BPMNShape id="Participant_tour_di" bpmnElement="Participant_tour" isHorizontal="true">
+        <dc:Bounds x="160" y="80" width="2740" height="660" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_requester_di" bpmnElement="Lane_requester" isHorizontal="true">
+        <dc:Bounds x="190" y="80" width="2710" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_approver_di" bpmnElement="Lane_approver" isHorizontal="true">
+        <dc:Bounds x="190" y="300" width="2710" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_finance_di" bpmnElement="Lane_finance" isHorizontal="true">
+        <dc:Bounds x="190" y="520" width="2710" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="222" y="172" width="36" height="36" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_submit_di" bpmnElement="task_submit">
+        <dc:Bounds x="355" y="150" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_score_di" bpmnElement="task_score">
+        <dc:Bounds x="525" y="150" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_policy_di" bpmnElement="task_policy">
+        <dc:Bounds x="695" y="150" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="gw_route_di" bpmnElement="gw_route">
+        <dc:Bounds x="895" y="165" width="50" height="50" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_auto_di" bpmnElement="task_auto">
+        <dc:Bounds x="1035" y="150" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="gw_split_di" bpmnElement="gw_split">
+        <dc:Bounds x="1065" y="385" width="50" height="50" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_approve_di" bpmnElement="task_approve">
+        <dc:Bounds x="1205" y="370" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="timer_escalate_di" bpmnElement="timer_escalate">
+        <dc:Bounds x="1297" y="432" width="36" height="36" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_budget_di" bpmnElement="task_budget">
+        <dc:Bounds x="1205" y="590" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_escalate_di" bpmnElement="task_escalate">
+        <dc:Bounds x="1375" y="590" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="gw_decided_di" bpmnElement="gw_decided">
+        <dc:Bounds x="1575" y="385" width="50" height="50" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="gw_join_di" bpmnElement="gw_join">
+        <dc:Bounds x="1745" y="385" width="50" height="50" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="gw_outcome_di" bpmnElement="gw_outcome">
+        <dc:Bounds x="1915" y="165" width="50" height="50" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="wait_cooling_di" bpmnElement="wait_cooling">
+        <dc:Bounds x="2092" y="172" width="36" height="36" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_record_di" bpmnElement="task_record">
+        <dc:Bounds x="2225" y="150" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_review_di" bpmnElement="task_review">
+        <dc:Bounds x="2395" y="150" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_closed_di" bpmnElement="end_closed">
+        <dc:Bounds x="2602" y="172" width="36" height="36" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="task_trace_di" bpmnElement="task_trace">
+        <dc:Bounds x="2055" y="370" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_rejected_di" bpmnElement="end_rejected">
+        <dc:Bounds x="2262" y="392" width="36" height="36" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="f_start_di" bpmnElement="f_start">
+        <di:waypoint x="258" y="190" />
+        <di:waypoint x="355" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_submit_di" bpmnElement="f_submit">
+        <di:waypoint x="465" y="190" />
+        <di:waypoint x="525" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_score_di" bpmnElement="f_score">
+        <di:waypoint x="635" y="190" />
+        <di:waypoint x="695" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_policy_di" bpmnElement="f_policy">
+        <di:waypoint x="805" y="190" />
+        <di:waypoint x="895" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_auto_di" bpmnElement="f_auto">
+        <di:waypoint x="945" y="190" />
+        <di:waypoint x="1035" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_review_di" bpmnElement="f_review">
+        <di:waypoint x="945" y="190" />
+        <di:waypoint x="1005" y="190" />
+        <di:waypoint x="1005" y="410" />
+        <di:waypoint x="1065" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_split_a_di" bpmnElement="f_split_a">
+        <di:waypoint x="1115" y="410" />
+        <di:waypoint x="1205" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_split_b_di" bpmnElement="f_split_b">
+        <di:waypoint x="1115" y="410" />
+        <di:waypoint x="1160" y="410" />
+        <di:waypoint x="1160" y="630" />
+        <di:waypoint x="1205" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_approved_di" bpmnElement="f_approved">
+        <di:waypoint x="1315" y="410" />
+        <di:waypoint x="1575" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_escalate_di" bpmnElement="f_escalate">
+        <di:waypoint x="1333" y="450" />
+        <di:waypoint x="1354" y="450" />
+        <di:waypoint x="1354" y="630" />
+        <di:waypoint x="1375" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_escalated_di" bpmnElement="f_escalated">
+        <di:waypoint x="1485" y="630" />
+        <di:waypoint x="1530" y="630" />
+        <di:waypoint x="1530" y="410" />
+        <di:waypoint x="1575" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_decided_di" bpmnElement="f_decided">
+        <di:waypoint x="1625" y="410" />
+        <di:waypoint x="1745" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_budget_di" bpmnElement="f_budget">
+        <di:waypoint x="1315" y="630" />
+        <di:waypoint x="1530" y="630" />
+        <di:waypoint x="1530" y="410" />
+        <di:waypoint x="1745" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_join_di" bpmnElement="f_join">
+        <di:waypoint x="1795" y="410" />
+        <di:waypoint x="1855" y="410" />
+        <di:waypoint x="1855" y="190" />
+        <di:waypoint x="1915" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_auto_out_di" bpmnElement="f_auto_out">
+        <di:waypoint x="1145" y="190" />
+        <di:waypoint x="1915" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_yes_di" bpmnElement="f_yes">
+        <di:waypoint x="1965" y="190" />
+        <di:waypoint x="2092" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_no_di" bpmnElement="f_no">
+        <di:waypoint x="1965" y="190" />
+        <di:waypoint x="2010" y="190" />
+        <di:waypoint x="2010" y="410" />
+        <di:waypoint x="2055" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_cooled_di" bpmnElement="f_cooled">
+        <di:waypoint x="2128" y="190" />
+        <di:waypoint x="2225" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_recorded_di" bpmnElement="f_recorded">
+        <di:waypoint x="2335" y="190" />
+        <di:waypoint x="2395" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_reviewed_di" bpmnElement="f_reviewed">
+        <di:waypoint x="2505" y="190" />
+        <di:waypoint x="2602" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f_traced_di" bpmnElement="f_traced">
+        <di:waypoint x="2165" y="410" />
+        <di:waypoint x="2262" y="410" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

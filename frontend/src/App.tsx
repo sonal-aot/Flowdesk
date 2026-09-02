@@ -37,6 +37,7 @@ import { Login } from './Login'
 import { Profile } from './Profile'
 import { Publish } from './Publish'
 import { Activity, Flows, Runs, Work } from './screens'
+import type { FlowSource } from './api'
 import { NAV_RAIL_WIDTH, NAV_WIDTH, createFlowdeskTheme } from './theme'
 
 type Page = 'flows' | 'work' | 'runs' | 'publish' | 'activity' | 'profile'
@@ -69,6 +70,9 @@ export default function App() {
   const [reloadKey, setReloadKey] = useState(0)
   const [focusRun, setFocusRun] = useState<number | null>(null)
   const [userMenu, setUserMenu] = useState<HTMLElement | null>(null)
+  // Editing a flow is publishing it again, so the publish screen is where it
+  // happens -- with the flow's own files already in it.
+  const [editing, setEditing] = useState<FlowSource | null>(null)
 
   const reload = useCallback(() => setReloadKey((key) => key + 1), [])
   const fail = useCallback((raw: unknown) => {
@@ -174,6 +178,7 @@ export default function App() {
             selected={page === item.key}
             onClick={() => {
               setFocusRun(null)
+              if (item.key !== 'publish') setEditing(null)
               setPage(item.key)
               setMobileNavOpen(false)
             }}
@@ -355,6 +360,11 @@ export default function App() {
                   setFocusRun(id)
                   setPage('runs')
                 }}
+                onEdit={(source) => {
+                  setEditing(source)
+                  setPage('publish')
+                }}
+                onChanged={reload}
                 onError={fail}
               />
             )}
@@ -371,7 +381,15 @@ export default function App() {
               />
             )}
             {me && page === 'publish' && (
-              <Publish me={me} onPublished={reload} onError={fail} />
+              <Publish
+                me={me}
+                prefill={editing}
+                onPublished={() => {
+                  setEditing(null)
+                  reload()
+                }}
+                onError={fail}
+              />
             )}
             {me && page === 'activity' && (
               <Activity reloadKey={reloadKey} onError={fail} />

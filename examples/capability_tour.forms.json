@@ -1,0 +1,54 @@
+{
+  "submit-request.json": {
+    "title": "Raise a request",
+    "type": "object",
+    "required": ["subject", "amount", "urgency"],
+    "properties": {
+      "subject": { "type": "string", "title": "What do you need?" },
+      "amount": {
+        "type": "integer",
+        "title": "Amount",
+        "description": "Over 100 goes to review; 100 or less is approved by policy",
+        "minimum": 1
+      },
+      "urgency": {
+        "type": "string",
+        "title": "Urgency",
+        "enum": ["low", "normal", "high"],
+        "default": "normal",
+        "description": "High always goes to review, whatever the amount"
+      },
+      "justification": { "type": "string", "title": "Why is it needed?" },
+      "needed_by": { "type": "string", "format": "date", "title": "Needed by" }
+    }
+  },
+  "approve-request.json": {
+    "title": "Approve or reject",
+    "type": "object",
+    "required": ["decision"],
+    "properties": {
+      "decision": {
+        "type": "string",
+        "title": "Decision",
+        "enum": ["approved", "rejected"],
+        "default": "approved"
+      },
+      "decided_by": { "type": "string", "title": "Who decided", "default": "the approver" },
+      "approver_note": { "type": "string", "title": "Note" }
+    }
+  },
+  "check-budget.json": {
+    "title": "Is there budget?",
+    "type": "object",
+    "required": ["budget_ok"],
+    "properties": {
+      "budget_ok": { "type": "boolean", "title": "Budget available", "default": true },
+      "cost_centre": {
+        "type": "string",
+        "title": "Cost centre",
+        "enum": ["Engineering", "Sales", "Operations"]
+      },
+      "budget_note": { "type": "string", "title": "Note" }
+    }
+  }
+}

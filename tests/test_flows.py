@@ -6,6 +6,8 @@ import time
 
 import json
 
+import pytest
+
 from conftest import FIXTURES, auth_headers, publish_fixture
 from flowdesk import bpmn_inspect, main
 
@@ -857,3 +859,226 @@ def test_instructions_missing_their_data_render_blank_rather_than_failing():
 
 def test_a_broken_template_says_so_instead_of_raising():
     assert "could not be rendered" in main.render_instructions("{% for %}", {})
+
+
+def test_the_capability_tour_runs_every_construct_the_library_supports(client):
+    """One flow, every construct, driven to an end event.
+
+    If the library gains or loses something, this is the test that notices. The
+    escalation timer is shortened so the boundary event is exercised too; the
+    published file leaves it at ten minutes.
+    """
+    publish_fixture(client, "capability_tour")
+    instance_id = start(client, "Process_capability_tour", who=SUBMITTER)
+
+    # userTask with a form
+    submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    assert submit["name"] == "Submit Request"
+    complete(
+        client,
+        submit["id"],
+        {"subject": "Standing desk", "amount": 250, "urgency": "high"},
+    )
+
+    # scriptTask and the DMN both ran, and the exclusive gateway routed on them
+    detail = instance(client, instance_id)
+    assert detail["data"]["tier"] == "medium"
+    assert detail["data"]["score"] == 25
+    assert detail["data"]["needs_review"] is True
+
+    # parallelGateway opened both branches at once, in different lanes
+    waiting = sorted(
+        t["name"] for t in open_tasks(client, ADMIN, mine=False)
+        if t["instance_id"] == instance_id
+    )
+    assert waiting == ["Approve Request", "Check Budget"]
+
+    approve = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
+    complete(client, approve["id"], {"decision": "approved"}, REVIEWER)
+    budget = next(
+        t for t in open_tasks(client, EDITOR) if t["instance_id"] == instance_id
+    )
+    complete(client, budget["id"], {"budget_ok": True}, EDITOR)
+
+    # The intermediate catch timer holds the run until the poller fires it, and
+    # the service task on the other side needs the connectors installed there.
+    deadline = time.time() + 40
+    review = None
+    while time.time() < deadline and review is None:
+        review = next(
+            (
+                t for t in open_tasks(client, SUBMITTER)
+                if t["instance_id"] == instance_id and t["name"] == "Review Outcome"
+            ),
+            None,
+        )
+        if review is None:
+            time.sleep(0.5)
+    assert review is not None, "the cooling-off timer never released the run"
+
+    # manualTask: no form, and its instructions carry the run's own data
+    opened = client.get(
+        f"/tasks/{review['id']}", headers=h(SUBMITTER)
+    ).json()
+    assert opened["form"] is None
+    assert "**Decision:** approved" in opened["instructions"]
+    assert "| Tier | medium |" in opened["instructions"]
+
+    complete(client, review["id"], {}, SUBMITTER)
+
+    final = instance(client, instance_id)
+    assert final["status"] == "complete"
+    kinds = {step["kind"] for step in final["progress"] if step["state"] == "done"}
+    assert {"start", "person", "script", "decision", "branch", "wait", "service", "end"} <= kinds
+
+    # The service task ran, and the branch nobody took is marked as such
+    assert [call["operation_id"] for call in final["activity"]] == ["log/Write"]
+    states = {step["name"]: step["state"] for step in final["progress"]}
+    assert states["Closed"] == "done"
+    assert states["Rejected"] == "not_needed"
+    assert states["Approve By Policy"] == "not_needed"
+
+
+def test_the_tour_skips_every_person_when_policy_allows(client):
+    """Within policy and not urgent: the DMN routes past both reviewers."""
+    publish_fixture(client, "capability_tour")
+    instance_id = start(client, "Process_capability_tour", who=SUBMITTER)
+    submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submit["id"], {"subject": "Mouse", "amount": 50, "urgency": "low"})
+
+    detail = instance(client, instance_id)
+    assert detail["data"]["needs_review"] is False
+    assert detail["data"]["decision"] == "approved"
+    assert detail["data"]["decided_by"] == "policy"
+    states = {step["name"]: step["state"] for step in detail["progress"]}
+    assert states["Approve Request"] == "upcoming"
+    assert states["Approve By Policy"] == "done"
+
+
+def test_a_boundary_timer_hands_the_approval_to_finance(client):
+    """Nobody answers, so the timer cancels the approval and escalates it."""
+    publish_fixture(
+        client, "capability_tour", edit=lambda bpmn: bpmn.replace("'PT10M'", "'PT2S'")
+    )
+    instance_id = start(client, "Process_capability_tour", who=SUBMITTER)
+    submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submit["id"], {"subject": "Laptop", "amount": 800, "urgency": "normal"})
+
+    deadline = time.time() + 40
+    while time.time() < deadline:
+        names = sorted(
+            t["name"] for t in open_tasks(client, ADMIN, mine=False)
+            if t["instance_id"] == instance_id
+        )
+        if "Escalated Approval" in names:
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError("the boundary timer never fired")
+
+    assert "Approve Request" not in names
+    escalated = next(
+        t for t in open_tasks(client, EDITOR)
+        if t["instance_id"] == instance_id and t["name"] == "Escalated Approval"
+    )
+    assert escalated["lane"] == "Finance"
+
+
+def test_a_designer_can_delete_a_flow_without_losing_its_history(client):
+    """Deleting takes the flow out of the catalogue. Runs that happened stay."""
+    publish_fixture(client, "two_step_request")
+    instance_id = start(client, "Process_two_step_request")
+    submit = next(t for t in open_tasks(client) if t["instance_id"] == instance_id)
+    complete(client, submit["id"], {"subject": "Chair", "details": "Broken"})
+    review = next(
+        t for t in open_tasks(client, REVIEWER) if t["instance_id"] == instance_id
+    )
+    complete(client, review["id"], {"decision": "approved"}, REVIEWER)
+
+    response = client.delete("/flows/Process_two_step_request", headers=h(ADMIN))
+    assert response.status_code == 200, response.text
+    assert response.json()["files_removed"] >= 1
+
+    # Gone from the catalogue, and nobody can start it
+    assert flows(client) == []
+    assert client.post(
+        "/flows/Process_two_step_request/start", json={}, headers=h(SUBMITTER)
+    ).status_code == 404
+
+    # The run it produced still opens, with its whole trace
+    detail = instance(client, instance_id)
+    assert detail["status"] == "complete"
+    assert [s["name"] for s in detail["progress"] if s["kind"] == "person"] == [
+        "Submit Request",
+        "Review Request",
+    ]
+
+
+def test_deleting_a_flow_with_a_run_in_flight_is_refused(client):
+    publish_fixture(client, "two_step_request")
+    start(client, "Process_two_step_request")
+
+    response = client.delete("/flows/Process_two_step_request", headers=h(ADMIN))
+
+    assert response.status_code == 409, response.text
+    assert "still going" in response.json()["technical"]
+    assert flows(client) != []
+
+
+@pytest.mark.parametrize("who", [REVIEWER, SUBMITTER])
+def test_only_a_designer_may_delete_or_edit_a_flow(client, who):
+    publish_fixture(client, "two_step_request")
+
+    assert client.delete(
+        "/flows/Process_two_step_request", headers=h(who)
+    ).status_code == 403
+    assert client.get(
+        "/flows/Process_two_step_request/source", headers=h(who)
+    ).status_code == 403
+    assert flows(client) != []
+
+
+def test_editing_a_flow_starts_from_what_is_published(client):
+    """Editing is publishing again, so the screen fills itself from the flow."""
+    publish_fixture(client, "expense_approval")
+
+    source = client.get(
+        "/flows/Process_expense_approval/source", headers=h(EDITOR)
+    ).json()
+
+    assert "<bpmn:process" in source["bpmn"]
+    assert source["dmn"] is not None and "decisionTable" in source["dmn"]
+    assert sorted(source["forms"]) == ["approve-expense.json", "submit-expense.json"]
+    assert source["lane_owners"] == {
+        "Submitter": ["submitter"],
+        "Approver": ["reviewer"],
+    }
+
+    # Publishing it back is a new version of the same flow, not a second one
+    published = client.post(
+        "/flows",
+        json={
+            "bpmn": source["bpmn"].replace("Submit Expense Claim", "Submit A Claim"),
+            "dmn": source["dmn"],
+            "forms": source["forms"],
+            "lane_owners": source["lane_owners"],
+        },
+        headers=h(EDITOR),
+    ).json()
+    assert published["process_id"] == "Process_expense_approval"
+    listed = flows(client)
+    assert len(listed) == 1
+    assert listed[0]["versions"] == 2
+    assert [step["name"] for step in listed[0]["steps"]][0] == "Submit A Claim"
+
+
+def test_publishing_a_deleted_flow_brings_it_back(client):
+    publish_fixture(client, "two_step_request")
+    client.delete("/flows/Process_two_step_request", headers=h(ADMIN))
+    assert flows(client) == []
+
+    publish_fixture(client, "two_step_request")
+
+    assert [row["process_id"] for row in flows(client)] == ["Process_two_step_request"]

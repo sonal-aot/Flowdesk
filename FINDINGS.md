@@ -299,6 +299,43 @@ The parser already walks the extension elements to find
 
 ---
 
+## 13. The connector registry is a context manager, so every path has to remember it — *high*
+
+`service_task_registry_scope` installs connectors for the duration of a block.
+That is a clean seam, and it is also a trap: **every** code path that can advance
+a workflow has to install them, not just the request handlers.
+
+A timer is an ordinary way to arrive at a service task. The host's scheduler
+poller — which is what the library asks for, since it never decides when a timer
+fires — runs `run_due_scheduler_jobs` far away from any request, and this app had
+no registry installed there. The result:
+
+```
+NotFoundError: No service task connector is registered for 'log'
+ServiceTaskExecutionError: Service task 'log/Write' failed for process instance 23
+```
+
+Nothing in the app's tests could have caught it: every other flow reaches its
+service tasks from a request. Only the shape "wait on a timer, then call a
+service" goes through the poller, and the capability tour is the first flow here
+with it. The run went to `error` and stayed there.
+
+The fix is four lines — poll per tenant inside `service_tasks(session, tenant)` —
+but finding it took reading the traceback in the server log, because the failure
+surfaces nowhere near the cause.
+
+**Suggestion:** let a registry be *registered* for a process, not only scoped
+around a call — or have `run_due_scheduler_jobs` take the registry as an
+argument, so the type system asks the question. Failing that,
+`doc/api.md` should say plainly that the scheduler needs the same connectors as
+the request path.
+
+*Evidence:* `src/flowdesk/scheduler.py`, `run_due_jobs_once`;
+`tests/test_flows.py::test_the_capability_tour_runs_every_construct_the_library_supports`
+(fails without it)
+
+---
+
 ## 8. Editing a user means writing the library's own table — *medium*
 
 Letting somebody change their display name or email address is an ordinary
@@ -364,13 +401,14 @@ particular to one app:
 1. Document — and ideally sandbox — script-task execution (#1). It changes what
    the publish permission means.
 2. Make lane ownership revocable (#2).
-3. Populate `form_file_name` (#3), or remove the columns.
-4. Add the read queries a console needs: what is published (#4), a run's steps
+3. Make the connector registry impossible to forget on the scheduler path (#13).
+4. Populate `form_file_name` (#3), or remove the columns.
+5. Add the read queries a console needs: what is published (#4), a run's steps
    and their states (#9), and what each step contributed (#11). All three are
    already in the tables; a host has to import the ORM models and understand
    SpiffWorkflow's delta format to reach them.
-5. Carry `instructionsForEndUser` through to the task (#12) — without it a manual
+6. Carry `instructionsForEndUser` through to the task (#12) — without it a manual
    task is a step with no content.
-6. Make roles composable so a host can express its own (#7).
-7. Add a safe user-update command (#8).
-8. Publish the lifecycle preconditions (#10).
+7. Make roles composable so a host can express its own (#7).
+8. Add a safe user-update command (#8).
+9. Publish the lifecycle preconditions (#10).

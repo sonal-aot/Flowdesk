@@ -540,6 +540,11 @@ def publish_flow(
         actor_user_id=caller.user_id,
         body=body,
     )
+    # Publishing a flow that was deleted brings it back, which is what somebody
+    # re-uploading a corrected file means by it.
+    store.unretire_flow(
+        session, tenant_id=caller.tenant_id, process_id=definition.bpmn_identifier
+    )
     session.flush()
     return flow_summary(definition, session)
 
@@ -549,8 +554,11 @@ def list_flows(
     caller: Caller = CallerDep, session: Session = SessionDep
 ) -> list[dict[str, Any]]:
     """Every flow anybody may start, newest version of each."""
+    gone = store.retired_flows(session, caller.tenant_id)
     seen: dict[str, dict[str, Any]] = {}
     for definition in definitions_for(session, caller.tenant_id):
+        if definition.bpmn_identifier in gone:
+            continue
         if definition.bpmn_identifier in seen:
             seen[definition.bpmn_identifier]["versions"] += 1
             continue
@@ -589,6 +597,84 @@ def get_diagram(
     return {"bpmn": definition.source_bpmn_xml or ""}
 
 
+@app.get("/flows/{process_id}/source")
+def get_flow_source(
+    process_id: str,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Everything needed to edit a flow: its files and who owns each lane.
+
+    Editing is publishing again -- the library versions a definition by id, so a
+    new version is the same command with new bytes. This is what the publish
+    screen fills itself from.
+    """
+    require(caller, PUBLISH)
+    definition = newest_definition(session, caller.tenant_id, process_id)
+    summary = flow_summary(definition, session)
+    forms: dict[str, Any] = {}
+    dmn: str | None = None
+    for item in store.assets_for(session, caller.tenant_id, process_id):
+        if item.kind == "form":
+            with contextlib.suppress(json.JSONDecodeError):
+                forms[item.filename] = json.loads(item.content)
+        elif item.kind == "dmn":
+            dmn = item.content
+    return {
+        "process_id": process_id,
+        "name": summary["name"],
+        "bpmn": definition.source_bpmn_xml or "",
+        "dmn": dmn,
+        "forms": forms,
+        "lane_owners": summary["lane_owners"],
+    }
+
+
+@app.delete("/flows/{process_id}")
+def delete_flow(
+    process_id: str,
+    caller: Caller = CallerDep,
+    session: Session = SessionDep,
+) -> dict[str, Any]:
+    """Take a flow out of the workspace.
+
+    Runs that already happened keep working: they point at the definition they
+    ran, and the console still has to be able to show them. What goes is the
+    flow's place in the catalogue, its files, and anybody's ability to start it.
+    A run still in flight blocks this -- deleting under somebody mid-approval is
+    not a thing to do quietly.
+    """
+    require(caller, PUBLISH)
+    newest_definition(session, caller.tenant_id, process_id)  # 404s if unknown
+
+    live = [
+        row
+        for row in api.execute_query(
+            session, api.ListProcessInstancesQuery(tenant_id=caller.tenant_id)
+        )
+        if row.process_model_identifier == process_id
+        and str(row.status) not in ProcessInstanceModel.terminal_statuses()
+    ]
+    if live:
+        raise InvalidStateError(
+            f"This run is not the only one: {len(live)} run"
+            f"{'' if len(live) == 1 else 's'} of this flow "
+            f"{'is' if len(live) == 1 else 'are'} still going. "
+            "Cancel them on the Runs tab first."
+        )
+
+    store.retire_flow(
+        session,
+        tenant_id=caller.tenant_id,
+        process_id=process_id,
+        username=caller.username,
+        now=now(),
+    )
+    files = store.delete_assets(session, caller.tenant_id, process_id)
+    session.commit()
+    return {"process_id": process_id, "deleted": True, "files_removed": files}
+
+
 @app.post("/flows/{process_id}/start", status_code=201)
 def start_flow(
     process_id: str,
@@ -597,6 +683,8 @@ def start_flow(
     session: Session = SessionDep,
 ) -> dict[str, Any]:
     """Start an instance of a published flow."""
+    if process_id in store.retired_flows(session, caller.tenant_id):
+        raise NotFoundError(f"No flow is published with the id {process_id!r}")
     definition = newest_definition(session, caller.tenant_id, process_id)
     summary = (body.summary if body else None) or (
         (definition.properties_json or {}).get("display_name")

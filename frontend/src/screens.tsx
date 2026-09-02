@@ -25,6 +25,8 @@ import {
 } from '@mui/material'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import CloseIcon from '@mui/icons-material/Close'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlineOutlined'
+import EditIcon from '@mui/icons-material/Edit'
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutlineOutlined'
 import HourglassTopIcon from '@mui/icons-material/HourglassTop'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
@@ -35,6 +37,7 @@ import {
   STATUS_COLOR,
   api,
   type ActivityRow,
+  type FlowSource,
   type FlowSummary,
   type InstanceDetail,
   type InstanceRow,
@@ -101,15 +104,20 @@ export function Flows({
   me,
   reloadKey,
   onStarted,
+  onEdit,
+  onChanged,
   onError,
 }: {
   me: Me
   reloadKey: number
   onStarted: (id: number) => void
+  onEdit: (source: FlowSource) => void
+  onChanged: () => void
   onError: Fail
 }) {
   const [rows, setRows] = useState<FlowSummary[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<FlowSummary | null>(null)
 
   useEffect(() => {
     let stale = false
@@ -121,6 +129,30 @@ export function Flows({
       stale = true
     }
   }, [reloadKey])
+
+  async function edit(flow: FlowSummary) {
+    setBusy(flow.process_id)
+    try {
+      onEdit(await api.flowSource(flow.process_id))
+    } catch (error) {
+      onError(error)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function remove(flow: FlowSummary) {
+    setBusy(flow.process_id)
+    try {
+      await api.deleteFlow(flow.process_id)
+      setRemoving(null)
+      onChanged()
+    } catch (error) {
+      onError(error)
+    } finally {
+      setBusy(null)
+    }
+  }
 
   async function begin(flow: FlowSummary) {
     setBusy(flow.process_id)
@@ -162,16 +194,41 @@ export function Flows({
                     {flow.process_id}
                   </Typography>
                 </Box>
-                {me.can_start && (
-                  <Button
-                    variant="contained"
-                    startIcon={<PlayArrowIcon />}
-                    disabled={busy === flow.process_id}
-                    onClick={() => begin(flow)}
-                  >
-                    {busy === flow.process_id ? 'Starting…' : 'Start'}
-                  </Button>
-                )}
+                <Stack direction="row" spacing={1}>
+                  {me.can_publish && (
+                    <>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<EditIcon />}
+                        disabled={busy === flow.process_id}
+                        onClick={() => edit(flow)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        startIcon={<DeleteOutlineIcon />}
+                        disabled={busy === flow.process_id}
+                        onClick={() => setRemoving(flow)}
+                      >
+                        Delete
+                      </Button>
+                    </>
+                  )}
+                  {me.can_start && (
+                    <Button
+                      variant="contained"
+                      startIcon={<PlayArrowIcon />}
+                      disabled={busy === flow.process_id}
+                      onClick={() => begin(flow)}
+                    >
+                      {busy === flow.process_id ? 'Starting…' : 'Start'}
+                    </Button>
+                  )}
+                </Stack>
               </Stack>
 
               {flow.steps.length === 0 ? (
@@ -239,6 +296,35 @@ export function Flows({
           </Card>
         ))}
       </Stack>
+
+      <Dialog
+        open={removing !== null}
+        onClose={() => setRemoving(null)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Delete “{removing?.name}”?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            It comes off this list, its files go, and nobody can start it again.
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Runs that already happened stay on the Runs tab with their full
+            history. A run still in flight will stop this — cancel that first.
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ mt: 2.5 }}>
+            <Button
+              variant="contained"
+              color="error"
+              disabled={busy !== null}
+              onClick={() => removing && remove(removing)}
+            >
+              {busy !== null ? 'Deleting…' : 'Delete'}
+            </Button>
+            <Button onClick={() => setRemoving(null)}>Keep it</Button>
+          </Stack>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

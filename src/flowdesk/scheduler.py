@@ -16,7 +16,9 @@ import os
 
 from m8flow_bpmn_core import api
 
+from flowdesk.connectors import service_tasks
 from flowdesk.db import session_factory
+from flowdesk.seed import TENANTS
 
 POLL_SECONDS = float(os.environ.get("FLOWDESK_SCHEDULER_POLL_SECONDS", "1.0"))
 WORKER_ID = os.environ.get("FLOWDESK_SCHEDULER_WORKER_ID", "flowdesk-poller")
@@ -25,17 +27,30 @@ logger = logging.getLogger(__name__)
 
 
 def run_due_jobs_once() -> int:
-    """Run every due scheduler job. Returns how many fired."""
-    session = session_factory()()
-    try:
-        executed = api.run_due_scheduler_jobs(session, worker_id=WORKER_ID)
-        session.commit()
-        return executed
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    """Run every due scheduler job. Returns how many fired.
+
+    Per tenant, because the connectors have to be installed for the run this is
+    about to advance: a timer is a perfectly ordinary way to arrive at a service
+    task, and the registry is a context manager the calling code owns. Without
+    this the flow fails with "no service task connector is registered" -- not on
+    the request path, only for the shape "timer, then a service task". See
+    FINDINGS.
+    """
+    executed = 0
+    for tenant_id in TENANTS:
+        session = session_factory()()
+        try:
+            with service_tasks(session, tenant_id):
+                executed += api.run_due_scheduler_jobs(
+                    session, worker_id=WORKER_ID, tenant_id=tenant_id
+                )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    return executed
 
 
 async def poll_forever() -> None:

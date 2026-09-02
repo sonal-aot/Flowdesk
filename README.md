@@ -41,7 +41,7 @@ Starting over: stop the backend, delete `flowdesk.db`, start again.
 
 ## Who can do what
 
-| Account | Publish flows | Start a flow | Do tasks | Hold / cancel / retry | See everyone's runs |
+| Account | Publish, edit, delete flows | Start a flow | Do tasks | Hold / cancel / retry | See everyone's runs |
 |---|---|---|---|---|---|
 | `admin` — Alex Admin | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `editor` — Erin Editor | ✓ | ✓ | ✓ | | ✓ |

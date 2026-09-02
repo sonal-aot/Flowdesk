@@ -52,6 +52,27 @@ class Credential(AppBase):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class RetiredFlow(AppBase):
+    """A flow that has been deleted from the workspace.
+
+    A row here rather than deleted definitions: past runs point at the
+    definition they ran, and the console still has to show them. Removing the
+    definition would take the history with it -- and the rows belong to the
+    library, which offers no command for it.
+    """
+
+    __tablename__ = "retired_flow"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "process_id", name="retired_flow_unique"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    process_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    retired_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    retired_at_in_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ConnectorCall(AppBase):
     """What a service task asked for, and what came back."""
 
@@ -168,3 +189,45 @@ def set_password(
     session.add(row)
     session.flush()
     return row
+
+
+def retire_flow(
+    session: Session, *, tenant_id: str, process_id: str, username: str, now: int
+) -> None:
+    """Take a flow out of the workspace. Idempotent."""
+    if process_id in retired_flows(session, tenant_id):
+        return
+    session.add(
+        RetiredFlow(
+            tenant_id=tenant_id,
+            process_id=process_id,
+            retired_by=username,
+            retired_at_in_seconds=now,
+        )
+    )
+
+
+def retired_flows(session: Session, tenant_id: str) -> set[str]:
+    return set(
+        session.scalars(
+            select(RetiredFlow.process_id).where(RetiredFlow.tenant_id == tenant_id)
+        )
+    )
+
+
+def delete_assets(session: Session, tenant_id: str, process_id: str) -> int:
+    """Drop a flow's own files. Returns how many went."""
+    rows = assets_for(session, tenant_id, process_id)
+    for row in rows:
+        session.delete(row)
+    return len(rows)
+
+
+def unretire_flow(session: Session, *, tenant_id: str, process_id: str) -> None:
+    """Publishing a deleted flow again brings it back."""
+    for row in session.scalars(
+        select(RetiredFlow).where(
+            RetiredFlow.tenant_id == tenant_id, RetiredFlow.process_id == process_id
+        )
+    ):
+        session.delete(row)

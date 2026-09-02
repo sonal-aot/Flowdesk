@@ -12,6 +12,27 @@
  *   node scripts/ui-check.mjs
  */
 import { chromium } from 'playwright'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+
+// `tsc` resolves an icon through the package's index.d.ts, which re-exports
+// every icon whether the file shipped or not -- so a missing one typechecks
+// clean and then fails at runtime as a blank page. Twice now. Check the files.
+{
+  const missing = []
+  for (const file of readdirSync('src').filter((name) => name.endsWith('.tsx'))) {
+    const source = readFileSync(`src/${file}`, 'utf8')
+    for (const [, icon] of source.matchAll(/from '@mui\/icons-material\/([A-Za-z0-9]+)'/g)) {
+      if (!existsSync(`node_modules/@mui/icons-material/${icon}.js`)) {
+        missing.push(`${file} -> ${icon}`)
+      }
+    }
+  }
+  if (missing.length) {
+    console.log(`FAIL  icon imports that do not exist: ${missing.join(', ')}`)
+    process.exit(1)
+  }
+  console.log('PASS  every @mui icon import resolves to a file')
+}
 
 const API = 'http://localhost:8020'
 const UI = 'http://localhost:5173'

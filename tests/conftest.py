@@ -32,6 +32,11 @@ FIXTURE_LANES: dict[str, dict[str, list[str]]] = {
         "System Owner": ["reviewer"],
         "Security": ["admin"],
     },
+    "capability_tour": {
+        "Requester": ["submitter"],
+        "Approver": ["reviewer"],
+        "Finance": ["editor"],
+    },
 }
 
 
